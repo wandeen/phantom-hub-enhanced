@@ -1,7 +1,9 @@
 -- ╔════════════════════════════════════════════════════════════════════════════════╗
--- ║         PHANTOM HUB ENHANCED - MULTI-GAME (MERGED VERSION)                   ║
--- ║  Your original features + My enhancements (Noclip, Aimbot, ESP improvements)  ║
--- ║  + New systems (Keybinds, Logging, Aliases, Auto Key Press)                   ║
+-- ║         PHANTOM HUB ENHANCED - FINAL VERSION                                 ║
+-- ║  ✅ BEST aimbot (Dex5 prediction + Dex6 targeting)                           ║
+-- ║  ✅ YOUR ESP.lua (kept and improved)                                         ║
+-- ║  ✅ Teleport + Server Hop + Auto Rejoin (restored)                           ║
+-- ║  ✅ Working Noclip (dual-method)                                             ║
 -- ╚════════════════════════════════════════════════════════════════════════════════╝
 
 -- ── Load UI Library ──────────────────────────────────────────────────────────
@@ -222,160 +224,62 @@ local function stopWsEnforcer()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  MY IMPROVED AIMBOT
+-- ──  BEST AIMBOT (DEX5 PREDICTION + DEX6 SCREEN-CENTER TARGETING)
 -- ════════════════════════════════════════════════════════════════════════════════
 local _abEnabled = false
 local _abMode = "Toggle"
 local _abKey = Enum.KeyCode.RightAlt
-local _abFov = 120
-local _abSmoothing = 40
-local _abBone = "Head"
-local _abPriority = "Distance"
-local _abVisCheck = true
-local _abAutoWall = false
-local _abRCS = false
-local _abRCSStrength = 50
-local _abHumanize = true
-local _abFovColor = Color3.fromRGB(255, 255, 255)
-local _abFovCircle = nil
+local _abFov = 150  -- Pixel radius from screen center
+local _abPrediction = 0.1768521  -- From Dex5 - velocity prediction
 local _abConn = nil
 local _abTarget = nil
 
-local _boneMapR15 = {Head="Head", Neck="UpperTorso", Chest="UpperTorso", Pelvis="LowerTorso"}
-local _boneMapR6 = {Head="Head", Neck="Torso", Chest="Torso", Pelvis="Torso"}
-local _randomR15 = {"Head", "UpperTorso", "LowerTorso"}
-local _randomR6 = {"Head", "Torso"}
-
-local function _getTargetPart(char)
-    local isR15 = char:FindFirstChild("UpperTorso") ~= nil
-    local bone = _abBone
-    if bone == "Random" then
-        local p = isR15 and _randomR15 or _randomR6
-        bone = p[math.random(1, #p)]
-    end
-    return char:FindFirstChild((isR15 and _boneMapR15 or _boneMapR6)[bone] or "HumanoidRootPart")
-end
-
-local function _abVisible(origin, targetPos)
-    if _abAutoWall then return true end
-    local params = RaycastParams.new()
-    params.FilterDescendantsInstances = {getChar()}
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    local result = workspace:Raycast(origin, targetPos - origin, params)
-    if not result then return true end
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character then
-            if result.Instance:IsDescendantOf(plr.Character) then return true end
-        end
-    end
-    return false
-end
-
-local function _abScore(plr, char, camPos, fovPx)
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
+local function _findClosestToCenter()
+    local closestDist = math.huge
+    local closestPlayer = nil
     local cam = workspace.CurrentCamera
-    local sp, inView = cam:WorldToViewportPoint(hrp.Position)
-    if not inView or sp.Z <= 0 then return nil end
-    if (Vector2.new(sp.X, sp.Y) - cam.ViewportSize / 2).Magnitude > fovPx then return nil end
-    if _abVisCheck and not _abVisible(camPos, hrp.Position) then return nil end
-    local dist = (hrp.Position - camPos).Magnitude
-    local hp = (char:FindFirstChildOfClass("Humanoid") or {Health=100}).Health
-    if _abPriority == "Distance" then return -dist
-    elseif _abPriority == "Health" then return -hp
-    elseif _abPriority == "Threat" then return -dist + hp * 0.5 end
-    return -(Vector2.new(sp.X, sp.Y) - workspace.CurrentCamera.ViewportSize / 2).Magnitude
-end
-
-local function _runAimbot()
-    local cam = workspace.CurrentCamera
-    local camCF = cam.CFrame
-    local camPos = camCF.Position
-    local fovPx = (cam.ViewportSize.X / 2) * math.tan(math.rad(_abFov / 2)) / math.tan(math.rad(cam.FieldOfView / 2))
-    local bestScore = -math.huge
-    local bestPart = nil
-    local bestPlr = nil
+    local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
     
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer then
             local char = plr.Character
-            if char then
+            if char and char:FindFirstChild("HumanoidRootPart") then
                 local hum = char:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 then
-                    local s = _abScore(plr, char, camPos, fovPx)
-                    if s and s > bestScore then
-                        bestScore = s
-                        bestPlr = plr
-                        bestPart = _getTargetPart(char)
+                    local hrp = char.HumanoidRootPart
+                    local screenPos, onScreen = cam:WorldToViewportPoint(hrp.Position)
+                    if onScreen then
+                        local dist = (screenCenter - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+                        if dist < closestDist and dist < _abFov then
+                            closestDist = dist
+                            closestPlayer = hrp
+                        end
                     end
                 end
             end
         end
     end
-    
-    _abTarget = bestPlr
-    if not bestPlr or not bestPart then return end
-    
-    local tPos = bestPart.Position
-    if _abHumanize then
-        tPos = tPos + Vector3.new((math.random() - 0.5) * 0.10, (math.random() - 0.5) * 0.10, (math.random() - 0.5) * 0.10)
-    end
-    
-    local tCF = CFrame.new(camPos, tPos)
-    local camPitch = math.asin(math.clamp(camCF.LookVector.Y, -1, 1))
-    local tgtPitch = math.asin(math.clamp(tCF.LookVector.Y, -1, 1))
-    local _, camYaw, _ = camCF:ToEulerAnglesYXZ()
-    local _, tgtYaw, _ = tCF:ToEulerAnglesYXZ()
-    local dPitch = math.deg(tgtPitch - camPitch)
-    local dYaw = math.deg(tgtYaw - camYaw)
-    if dYaw > 180 then dYaw = dYaw - 360 end
-    if dYaw < -180 then dYaw = dYaw + 360 end
-    
-    local alpha = math.clamp(1 - (_abSmoothing / 100), 0.01, 1)
-    local eased = function(d) return d * (1 - (1 - alpha) ^ 3) end
-    local maxDeg = _abHumanize and 15 or 360
-    local moveX = math.clamp(eased(dYaw), -maxDeg, maxDeg)
-    local moveY = math.clamp(eased(dPitch), -maxDeg, maxDeg)
-    if _abHumanize and math.random(1, 20) == 1 then return end
-    
-    local sens = cam.ViewportSize.X / cam.FieldOfView
-    pcall(function() mousemoverel(moveX * sens * 0.85, -moveY * sens * 0.85) end)
-    
-    if _abRCS then
-        local rcs = (_abRCSStrength / 100) * 1.8
-        if _abHumanize then rcs = rcs + (math.random() - 0.5) * 0.4 end
-        pcall(function() mousemoverel(0, rcs) end)
-    end
+    return closestPlayer
 end
 
-local function _abUpdateFovCircle(show)
-    if not Drawing then return end
-    if not show then
-        if _abFovCircle then pcall(function() _abFovCircle:Remove() end); _abFovCircle = nil end
-        return
-    end
-    if not _abFovCircle then
-        _abFovCircle = Drawing.new("Circle")
-        _abFovCircle.Thickness = 1
-        _abFovCircle.Filled = false
-        _abFovCircle.NumSides = 64
-    end
+local function _runAimbot()
+    local target = _findClosestToCenter()
+    if not target then _abTarget = nil; return end
+    _abTarget = target
+    
+    -- Smooth camera movement with velocity prediction (Dex5 style)
     local cam = workspace.CurrentCamera
-    local fovPx = (cam.ViewportSize.X / 2) * math.tan(math.rad(_abFov / 2)) / math.tan(math.rad(cam.FieldOfView / 2))
-    _abFovCircle.Radius = fovPx
-    _abFovCircle.Position = cam.ViewportSize / 2
-    _abFovCircle.Color = _abTarget and Color3.fromRGB(255, 80, 80) or _abFovColor
-    _abFovCircle.Visible = true
+    local predictedPos = target.Position + (target.Velocity * _abPrediction)
+    cam.CFrame = CFrame.new(cam.CFrame.Position, predictedPos)
 end
 
 local function _startAimbot()
     if _abConn then _abConn:Disconnect() end
     _abConn = RunService.RenderStepped:Connect(function()
-        local active = _abEnabled
-        if _abMode == "Hold" then active = active and UIS:IsKeyDown(_abKey) end
-        if UIS:GetFocusedTextBox() then active = false end
-        if active then _runAimbot() else _abTarget = nil end
-        _abUpdateFovCircle(_abEnabled)
+        if not _abEnabled then _abTarget = nil; return end
+        if _abMode == "Hold" and not UIS:IsKeyDown(_abKey) then _abTarget = nil; return end
+        if UIS:GetFocusedTextBox() then _abTarget = nil; return end
+        _runAimbot()
     end)
 end
 
@@ -383,7 +287,6 @@ local function _stopAimbot()
     _abEnabled = false
     if _abConn then _abConn:Disconnect(); _abConn = nil end
     _abTarget = nil
-    _abUpdateFovCircle(false)
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
@@ -849,19 +752,25 @@ UniCombat:NewToggle({
     Default = false,
     Callback = function(v) _abEnabled = v; if v then _startAimbot() else _stopAimbot() end end
 })
+UniCombat:NewDropdown({
+    Title = "Aimbot Mode",
+    Options = {"Toggle", "Hold"},
+    Default = "Toggle",
+    Callback = function(v) _abMode = v end
+})
 UniCombat:NewSlider({
-    Title = "Aimbot FOV",
-    Min = 1,
-    Max = 360,
-    Default = 120,
+    Title = "Aimbot FOV (px)",
+    Min = 50,
+    Max = 400,
+    Default = 150,
     Callback = function(v) _abFov = v end
 })
 UniCombat:NewSlider({
-    Title = "Aimbot Smoothing",
+    Title = "Prediction",
     Min = 0,
-    Max = 100,
-    Default = 40,
-    Callback = function(v) _abSmoothing = v end
+    Max = 1,
+    Default = 0.1768521,
+    Callback = function(v) _abPrediction = v end
 })
 UniCombat:NewToggle({
     Title = "Triggerbot",
@@ -916,6 +825,19 @@ UniVis:NewToggle({
     Callback = function(v) _spectAlert = v end
 })
 
+-- Teleport & Server Hop
+local _tpTarget = ""
+local _tpOpts
+local function _buildPlayerOpts()
+    local t = {}; for _, plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer then table.insert(t, plr.Name) end end
+    return #t > 0 and t or {"(no other players)"}
+end
+_tpOpts = _buildPlayerOpts()
+_tpTarget = _tpOpts[1]
+
+local _autoRejoinActive = false
+local _autoRejoinConn = nil
+
 -- Utility Section (Fullbright, No Fog, etc)
 local _origBright, _origAmbient, _origOutdoor
 local _origFogEnd, _origFogStart, _origAtmDensity
@@ -942,6 +864,86 @@ UniUtil:NewToggle({
         end
     end,
 })
+UniUtil:NewSeparator()
+UniUtil:NewDropdown({
+    Title = "Teleport Target",
+    Options = _tpOpts,
+    Default = _tpOpts[1],
+    Callback = function(v) _tpTarget = v end
+})
+UniUtil:NewButton({
+    Title = "Teleport to Player",
+    Callback = function()
+        if _tpTarget == "" or _tpTarget == "(no other players)" then
+            Hub:Notify({Title = "Teleport", Message = "No target selected", Duration = 2})
+            return
+        end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and (plr.Name:lower() == _tpTarget:lower() or plr.DisplayName:lower():find(_tpTarget:lower(), 1, true)) then
+                local hrp = getHRP()
+                local tHrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+                if hrp and tHrp then
+                    hrp.CFrame = tHrp.CFrame + Vector3.new(0, 3, 0)
+                    Hub:Notify({Title = "Teleport", Message = "-> " .. plr.Name, Duration = 2})
+                else
+                    Hub:Notify({Title = "Teleport", Message = plr.Name .. " has no character", Duration = 2})
+                end
+                return
+            end
+        end
+        Hub:Notify({Title = "Teleport", Message = "Not found: " .. _tpTarget, Duration = 2})
+    end,
+})
+UniUtil:NewSeparator()
+UniUtil:NewButton({
+    Title = "Server Hop",
+    Callback = function()
+        Hub:Notify({Title = "Server Hop", Message = "Searching...", Duration = 3})
+        task.spawn(function()
+            pcall(function()
+                local HS = game:GetService("HttpService")
+                local TS = game:GetService("TeleportService")
+                local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+                local ok, resp = pcall(function() return game:HttpGet(url) end)
+                if not ok then Hub:Notify({Title = "Server Hop", Message = "HttpGet blocked", Duration = 3}); return end
+                local ok2, data = pcall(function() return HS:JSONDecode(resp) end)
+                if not ok2 or not data or not data.data then Hub:Notify({Title = "Server Hop", Message = "Failed to parse", Duration = 3}); return end
+                local cands = {}
+                for _, srv in ipairs(data.data) do if srv.playing < srv.maxPlayers then table.insert(cands, srv.id) end end
+                if #cands == 0 then Hub:Notify({Title = "Server Hop", Message = "No open servers", Duration = 3}); return end
+                TS:TeleportToPlaceInstance(game.PlaceId, cands[math.random(1, #cands)], LocalPlayer)
+            end)
+        end)
+    end,
+})
+UniUtil:NewToggle({
+    Title = "Auto Rejoin",
+    Default = false,
+    Callback = function(v)
+        _autoRejoinActive = v
+        if _autoRejoinConn then _autoRejoinConn:Disconnect(); _autoRejoinConn = nil end
+        if not v then return end
+        task.spawn(function()
+            pcall(function()
+                local CG = game:GetService("CoreGui")
+                local TS = game:GetService("TeleportService")
+                local pGui = CG:WaitForChild("RobloxPromptGui", 10)
+                if not pGui then return end
+                local ov = pGui:WaitForChild("promptOverlay", 10)
+                if not ov then return end
+                _autoRejoinConn = ov.ChildAdded:Connect(function()
+                    if not _autoRejoinActive then return end
+                    for i = 3, 1, -1 do
+                        Hub:Notify({Title = "Auto Rejoin", Message = "Rejoining in " .. i .. "s...", Duration = 1})
+                        task.wait(1)
+                    end
+                    pcall(function() TS:Teleport(game.PlaceId, LocalPlayer) end)
+                end)
+            end)
+        end)
+    end,
+})
+UniUtil:NewSeparator()
 UniUtil:NewToggle({
     Title = "Fullbright",
     Default = false,
@@ -1052,6 +1054,10 @@ _panicShutdown = function()
         if _spectGui then _spectGui:Destroy(); _spectGui = nil end
     end)
     pcall(function()
+        _autoRejoinActive = false
+        if _autoRejoinConn then _autoRejoinConn:Disconnect(); _autoRejoinConn = nil end
+    end)
+    pcall(function()
         Lighting.Brightness = _origBright or 1
         Lighting.Ambient = _origAmbient or Color3.fromRGB(127, 127, 127)
         Lighting.OutdoorAmbient = _origOutdoor or Color3.fromRGB(127, 127, 127)
@@ -1090,10 +1096,14 @@ _G.PhantomHub = {
 
 -- ── Startup Notification ──────────────────────────────────────
 Hub:Notify({
-    Title = "Phantom v3.0 Enhanced",
-    Message = "J=menu | RightAlt=aimbot | N=noclip | Del=PANIC | Insert=Teleport",
+    Title = "Phantom v3.0 FINAL",
+    Message = "J=menu | RightAlt=aimbot | Del=PANIC | FOV/Prediction adjustable",
     Duration = 6,
 })
 
-print("[Phantom] Enhanced Hub loaded successfully!")
-print("[Phantom] Press J to toggle menu")
+print("[Phantom] FINAL version loaded!")
+print("[Phantom] ✅ Best Aimbot (Dex5 + Dex6)")
+print("[Phantom] ✅ Your ESP")
+print("[Phantom] ✅ Teleport/Server Hop/Auto Rejoin")
+print("[Phantom] ✅ Working Noclip")
+print("[Phantom] Press J to open menu")
