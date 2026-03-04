@@ -1,5 +1,5 @@
 -- ╔════════════════════════════════════════════════════════════════════════════════╗
--- ║         PHANTOM HUB ENHANCED - v3.3                                          ║
+-- ║         PHANTOM HUB ENHANCED - v3.4                                          ║
 -- ║  ✅ Improved aimbot (smooth, wall-check, bone target, team filter, lock)      ║
 -- ║  ✅ Upgraded ESP (health/dist/lookline, survives death+rejoin)                ║
 -- ║  ✅ Teleport + Server Hop + Auto Rejoin (restored)                           ║
@@ -251,51 +251,69 @@ local function _nrReset()
     _nrCalibrated  = false
 end
 
+local _PHANTOM_NR_STEP = "PhantomNoRecoil"
+
 local function _startNoRecoil()
-    if _noRecoilConn then _noRecoilConn:Disconnect() end
+    pcall(function() RunService:UnbindFromRenderStep(_PHANTOM_NR_STEP) end)
     _nrReset()
 
-    _noRecoilConn = RunService.RenderStepped:Connect(function()
+    -- Run at Camera+1: we see the FULLY updated cam.CFrame after Roblox's own
+    -- camera module has applied mouse movement AND any game-applied recoil.
+    -- This means pitchDelta correctly captures all upward movement this frame.
+    RunService:BindToRenderStep(_PHANTOM_NR_STEP, Enum.RenderPriority.Camera.Value + 1, function()
         if not _noRecoilEnabled then _nrLastCF = nil; return end
 
         local cam        = workspace.CurrentCamera
         local mouseDelta = UIS:GetMouseDelta()
 
+        -- Bootstrap: record baseline on first active frame
         if not _nrLastCF then _nrLastCF = cam.CFrame; return end
 
         local lastPitch  = select(1, _nrLastCF:ToEulerAnglesYXZ())
         local curPitch   = select(1, cam.CFrame:ToEulerAnglesYXZ())
-        local pitchDelta = curPitch - lastPitch  -- positive = camera tilted up
+        local pitchDelta = curPitch - lastPitch  -- positive = camera tilted upward
 
-        -- Auto-calibrate: record how many radians one mouse pixel equals
+        -- ── sensitivity auto-calibration ─────────────────────────────────────
+        -- Sample frames where intentional mouse movement is large enough to
+        -- distinguish from noise, and there's a measurable camera response.
         if not _nrCalibrated
-            and math.abs(mouseDelta.Y) > 3
-            and math.abs(pitchDelta)   > 0.0001 then
-            table.insert(_nrCalibSamples, math.abs(pitchDelta) / math.abs(mouseDelta.Y))
-            if #_nrCalibSamples >= _NR_CALIB_FRAMES then
-                local sum = 0
-                for _, v in ipairs(_nrCalibSamples) do sum = sum + v end
-                _nrSensitivity = sum / #_nrCalibSamples
-                _nrCalibrated  = true
+            and math.abs(mouseDelta.Y) > 2
+            and math.abs(pitchDelta)   > 0.00005 then
+            local ratio = math.abs(pitchDelta) / math.abs(mouseDelta.Y)
+            -- Sanity-clamp: ignore obviously wrong samples (e.g. from snaps)
+            if ratio > 0.0001 and ratio < 0.05 then
+                table.insert(_nrCalibSamples, ratio)
+                if #_nrCalibSamples >= _NR_CALIB_FRAMES then
+                    local sum = 0
+                    for _, v in ipairs(_nrCalibSamples) do sum = sum + v end
+                    _nrSensitivity = sum / #_nrCalibSamples
+                    _nrCalibrated  = true
+                    Hub:Notify({Title="No Recoil", Message="Calibrated ✓ (sens="..string.format("%.5f", _nrSensitivity)..")", Duration=3})
+                end
             end
         end
 
-        -- Expected pitch from intentional mouse movement
+        -- ── recoil cancel ────────────────────────────────────────────────────
+        -- Expected camera pitch change purely from the mouse this frame
         local expectedPitch = -mouseDelta.Y * _nrSensitivity
-        -- Anything upward beyond that is recoil
-        local recoilPitch = pitchDelta - expectedPitch
+        -- Any upward pitch beyond what the mouse caused = recoil
+        local recoilPitch   = pitchDelta - expectedPitch
 
-        if recoilPitch > 0.0003 then
-            cam.CFrame = cam.CFrame * CFrame.Angles(-recoilPitch * _noRecoilStrength, 0, 0)
+        -- Only cancel upward surprise (positive = up in Roblox pitch convention)
+        -- Use a small deadband (0.0001 rad ≈ 0.006°) to ignore floating-point noise
+        if recoilPitch > 0.0001 then
+            local cancel = -recoilPitch * _noRecoilStrength
+            cam.CFrame = cam.CFrame * CFrame.Angles(cancel, 0, 0)
         end
 
+        -- Record corrected CFrame as baseline for next frame
         _nrLastCF = cam.CFrame
     end)
 end
 
 local function _stopNoRecoil()
     _noRecoilEnabled = false
-    if _noRecoilConn then _noRecoilConn:Disconnect(); _noRecoilConn = nil end
+    pcall(function() RunService:UnbindFromRenderStep(_PHANTOM_NR_STEP) end)
     _nrReset()
 end
 
@@ -374,24 +392,45 @@ local function _hookNoSpread()
         setreadonly(mt, true)
     end)
 
-    -- ── workspace:Raycast (local hitscan games) ──────────────────────────────
+    -- ── workspace ray hooks (Raycast + FindPartOnRay legacy APIs) ──────────────
     pcall(function()
         local wsmt   = getrawmetatable(workspace)
         local gamemt = getrawmetatable(game)
-        if wsmt == gamemt then return end  -- shared mt, already handled above
+        if wsmt == gamemt then return end  -- shared mt already handled above
 
         _nsOrigWsNc = wsmt.__namecall
         setreadonly(wsmt, false)
 
         wsmt.__namecall = newcclosure(function(self, ...)
-            if _noSpreadEnabled and getnamecallmethod() == "Raycast" then
-                local args = {...}
-                -- workspace:Raycast(origin, direction, params?)
-                if args[2] and typeof(args[2]) == "Vector3" and args[2].Magnitude > 0.1 then
-                    -- keep original ray length but use exact camera look direction
-                    args[2] = workspace.CurrentCamera.CFrame.LookVector * args[2].Magnitude
+            local shouldFix = _noSpreadEnabled or (_abEnabled and _abSilent and _saLocked)
+            if shouldFix then
+                local method = getnamecallmethod()
+                local args   = {...}
+
+                -- Determine replacement direction
+                local replDir
+                if _abEnabled and _abSilent and _saLocked then
+                    replDir = (_saLocked - workspace.CurrentCamera.CFrame.Position).Unit
+                else
+                    replDir = workspace.CurrentCamera.CFrame.LookVector
                 end
-                return _nsOrigWsNc(self, table.unpack(args))
+
+                -- workspace:Raycast(origin:V3, direction:V3, params?)
+                if method == "Raycast" then
+                    if args[2] and typeof(args[2]) == "Vector3" and args[2].Magnitude > 0.1 then
+                        args[2] = replDir * args[2].Magnitude
+                    end
+                    return _nsOrigWsNc(self, table.unpack(args))
+
+                -- workspace:FindPartOnRay(ray, blacklist?, waterTrans?, ignoreWater?)
+                elseif method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList" then
+                    if args[1] and typeof(args[1]) == "Ray" then
+                        -- Rebuild the Ray with the corrected direction
+                        local orig = args[1]
+                        args[1] = Ray.new(orig.Origin, replDir * orig.Direction.Magnitude)
+                    end
+                    return _nsOrigWsNc(self, table.unpack(args))
+                end
             end
             return _nsOrigWsNc(self, ...)
         end)
@@ -558,20 +597,20 @@ local function _abGetPredicted(target)
 end
 
 local function _runAimbot()
-    -- ── target acquisition / lock maintenance ────────────────────────────────
+    -- ── target lock maintenance ───────────────────────────────────────────────
+    --  We only drop the lock when the target is truly gone (dead, left the game,
+    --  behind a wall).  We do NOT drop on screen-distance so that mouse movement
+    --  never breaks the lock — BindToRenderStep at Camera+1 overwrites the camera
+    --  after the game's own camera module, so we always get the final say.
     local keepLock = false
     if _abTarget then
-        -- Check if current lock is still valid
         local plr  = _abTarget.player
         local part = _abTarget.part
         if _abIsValidTarget(plr) and part and part.Parent then
             local bonePos = _abGetBonePos(plr.Character)
             if bonePos then
-                local d = _abGetScreenDist(bonePos)
-                if d < _abFov * 1.5 then   -- give 50% extra FOV grace when already locked
-                    if not _abWallCheck or not _abIsWallBlocked(bonePos) then
-                        keepLock = true
-                    end
+                if not _abWallCheck or not _abIsWallBlocked(bonePos) then
+                    keepLock = true
                 end
             end
         end
@@ -601,9 +640,52 @@ local function _runAimbot()
     cam.CFrame    = cam.CFrame:Lerp(targetCF, alpha)
 end
 
+-- ── FOV circle (Drawing API) ─────────────────────────────────────────────────
+local _fovCircle = nil
+
+local function _createFovCircle()
+    pcall(function()
+        if _fovCircle then pcall(function() _fovCircle:Remove() end); _fovCircle = nil end
+        if not Drawing then return end
+        local c = Drawing.new("Circle")
+        c.Thickness      = 1
+        c.NumSides       = 64
+        c.Color          = Color3.fromRGB(255, 255, 255)
+        c.Filled         = false
+        c.Transparency   = 1        -- fully opaque in Drawing API
+        c.Visible        = false
+        _fovCircle = c
+    end)
+end
+
+local function _destroyFovCircle()
+    pcall(function()
+        if _fovCircle then _fovCircle:Remove(); _fovCircle = nil end
+    end)
+end
+
+local function _updateFovCircle()
+    if not _fovCircle then return end
+    pcall(function()
+        local cam = workspace.CurrentCamera
+        _fovCircle.Position = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
+        _fovCircle.Radius   = _abFov
+        _fovCircle.Visible  = _abEnabled and not _abSilent  -- hide in silent mode (no visual giveaway)
+    end)
+end
+
+_createFovCircle()  -- create on script load (Drawing is always available in exploits)
+
+-- ── Aimbot loop ───────────────────────────────────────────────────────────────
+--  CRITICAL: use BindToRenderStep at Camera+1 priority so we run AFTER the
+--  Roblox camera module applies mouse movement. This gives us the final word
+--  on cam.CFrame every frame, which is why mouse movement used to break lock.
+local _PHANTOM_AB_STEP = "PhantomAimbot"
+
 local function _startAimbot()
-    if _abConn then _abConn:Disconnect() end
-    _abConn = RunService.RenderStepped:Connect(function()
+    pcall(function() RunService:UnbindFromRenderStep(_PHANTOM_AB_STEP) end)
+    RunService:BindToRenderStep(_PHANTOM_AB_STEP, Enum.RenderPriority.Camera.Value + 1, function()
+        _updateFovCircle()
         if not _abEnabled then _abTarget = nil; _saLocked = nil; return end
         if _abMode == "Hold" and not UIS:IsKeyDown(_abKey) then
             _abTarget = nil; _saLocked = nil; return
@@ -615,9 +697,63 @@ end
 
 local function _stopAimbot()
     _abEnabled = false
+    pcall(function() RunService:UnbindFromRenderStep(_PHANTOM_AB_STEP) end)
     if _abConn then _abConn:Disconnect(); _abConn = nil end
     _abTarget  = nil
     _saLocked  = nil
+    _destroyFovCircle()
+end
+
+-- ── Silent aim: camera-swap on click ─────────────────────────────────────────
+--  This is the reliable universal approach.  When the player fires (Mouse1Down),
+--  we briefly rotate cam.CFrame toward the locked target for exactly that frame.
+--  The game's weapon code reads cam.CFrame.LookVector and gets our redirected
+--  direction.  Next frame we restore.  Works for any game that reads the camera
+--  rather than sending a client-computed direction to the server.
+--
+--  The __namecall hook (for FireServer direction args) remains active as a
+--  second layer for games that DO send direction vectors to the server.
+local _saStoredCF     = nil
+local _saSwapActive   = false
+local _saClickConn    = nil
+local _saRestoreConn  = nil
+
+local function _startSilentAimClick()
+    if _saClickConn then _saClickConn:Disconnect() end
+    if _saRestoreConn then _saRestoreConn:Disconnect() end
+
+    _saClickConn = UIS.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        if not _abEnabled or not _abSilent or not _saLocked then return end
+
+        local cam = workspace.CurrentCamera
+        _saStoredCF   = cam.CFrame
+        _saSwapActive = true
+        -- Point camera at predicted target position
+        cam.CFrame = CFrame.new(cam.CFrame.Position, _saLocked)
+    end)
+
+    -- Restore on the very next rendered frame (InputEnded fires after game processes click)
+    _saRestoreConn = UIS.InputEnded:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        if not _saSwapActive then return end
+        _saSwapActive = false
+        if _saStoredCF then
+            workspace.CurrentCamera.CFrame = _saStoredCF
+            _saStoredCF = nil
+        end
+    end)
+end
+
+local function _stopSilentAimClick()
+    if _saClickConn   then _saClickConn:Disconnect();   _saClickConn   = nil end
+    if _saRestoreConn then _saRestoreConn:Disconnect(); _saRestoreConn = nil end
+    -- Restore camera if we're mid-swap
+    if _saSwapActive and _saStoredCF then
+        pcall(function() workspace.CurrentCamera.CFrame = _saStoredCF end)
+    end
+    _saSwapActive = false; _saStoredCF = nil
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
@@ -1200,7 +1336,12 @@ UniCombat:NewToggle({
     Default = false,
     Callback = function(v)
         _abEnabled = v
-        if v then _startAimbot() else _stopAimbot() end
+        if v then
+            _createFovCircle()
+            _startAimbot()
+        else
+            _stopAimbot()
+        end
     end
 })
 UniCombat:NewDropdown({
@@ -1224,7 +1365,10 @@ UniCombat:NewDropdown({
 UniCombat:NewSlider({
     Title = "Aimbot FOV (px)",
     Min = 10, Max = 400, Default = 150,
-    Callback = function(v) _abFov = v end
+    Callback = function(v)
+        _abFov = v
+        if _fovCircle then pcall(function() _fovCircle.Radius = v end) end
+    end
 })
 UniCombat:NewSlider({
     Title = "Smoothing (0=snap 100=slow)",
@@ -1253,15 +1397,18 @@ UniCombat:NewToggle({
     Callback = function(v)
         _abSilent = v
         if v then
-            -- Silent aim needs the namecall hook active
-            local ok = _hookNoSpread()
-            if ok and _nsHooked then
-                Hub:Notify({Title="Silent Aim", Message="ON — camera stays still, shots redirect to target", Duration=4})
-            else
-                _abSilent = false
-                Hub:Notify({Title="Silent Aim", Message="Hook failed — executor may not support getrawmetatable", Duration=5})
-            end
+            -- Layer 1: camera-swap on click (universal, works in all games)
+            _startSilentAimClick()
+            -- Layer 2: __namecall hook (extra layer for games that send direction to server)
+            pcall(_hookNoSpread)
+            -- Hide FOV circle in silent mode (don't reveal to spectators)
+            if _fovCircle then pcall(function() _fovCircle.Visible = false end) end
+            Hub:Notify({Title="Silent Aim", Message="ON — dual-layer (camera-swap + remote hook)", Duration=4})
         else
+            _stopSilentAimClick()
+            if _fovCircle and _abEnabled then
+                pcall(function() _fovCircle.Visible = true end)
+            end
             Hub:Notify({Title="Silent Aim", Message="OFF", Duration=2})
         end
     end,
@@ -1626,7 +1773,137 @@ DataSec:NewToggle({
     end
 })
 
+-- ── Autoexec persistence ──────────────────────────────────────────────────────
+--  Writes this hub script into your executor's autoexec folder so it
+--  automatically re-injects whenever you join any Roblox game.
+--
+--  How it finds itself:
+--    1. Tries common filenames in workspace / scripts folders
+--    2. Falls back to writing a Phantom-library loader (loads the UI lib only)
+--
+--  After clicking, the file "autoexec/PhantomHub.lua" will exist in your
+--  executor folder.  Delete it any time to stop auto-injection.
+-- ─────────────────────────────────────────────────────────────────────────────
+local _AUTOEXEC_FILE   = "autoexec/PhantomHub.lua"
+local _AUTOEXEC_FOLDER = "autoexec"
+
+local function _trySaveAutoexec(silent)
+    local saved = false
+    pcall(function()
+        if not isfolder(_AUTOEXEC_FOLDER) then makefolder(_AUTOEXEC_FOLDER) end
+
+        -- Try to find and copy the hub script file from common locations
+        local candidates = {
+            "Hub_Enhanced_MultiGame.lua",
+            "PhantomHub.lua",
+            "scripts/PhantomHub.lua",
+            "scripts/Hub_Enhanced_MultiGame.lua",
+            "workspace/PhantomHub.lua",
+        }
+        for _, path in ipairs(candidates) do
+            if pcall(function()
+                if isfile(path) then
+                    writefile(_AUTOEXEC_FILE, readfile(path))
+                    saved = true
+                end
+            end) and saved then break end
+        end
+
+        -- Fallback: write a minimal loader that re-runs from Phantom library URL
+        -- (user will still need to manually add hub code below it)
+        if not saved then
+            local loaderContent = string.format([[
+-- PhantomHub Auto-Loader (created %s)
+-- NOTE: This is a minimal loader. For full hub code, paste your
+--       Hub_Enhanced_MultiGame.lua content below the library load line.
+local _ph = loadstring(game:HttpGet("%s"))
+if _ph then _ph() end
+]], os.date and os.date("%Y-%m-%d") or "unknown", _phantomUrl)
+            writefile(_AUTOEXEC_FILE, loaderContent)
+            saved = "partial"
+        end
+    end)
+    return saved
+end
+
+DataSec:NewButton({
+    Title = "💾 Save to Autoexec",
+    Callback = function()
+        local result = _trySaveAutoexec(false)
+        if result == true then
+            Hub:Notify({
+                Title   = "Autoexec",
+                Message = "✅ Saved! Hub will auto-load next game join.",
+                Duration = 5,
+            })
+        elseif result == "partial" then
+            Hub:Notify({
+                Title   = "Autoexec",
+                Message = "⚠ Partial save. Paste your hub script into autoexec/PhantomHub.lua manually.",
+                Duration = 7,
+            })
+        else
+            Hub:Notify({
+                Title   = "Autoexec",
+                Message = "❌ Failed — executor may not support writefile/isfolder.",
+                Duration = 5,
+            })
+        end
+    end,
+})
+
+DataSec:NewButton({
+    Title = "🗑 Remove Autoexec",
+    Callback = function()
+        local ok = pcall(function()
+            if isfile(_AUTOEXEC_FILE) then
+                delfile(_AUTOEXEC_FILE)
+            end
+        end)
+        Hub:Notify({
+            Title   = "Autoexec",
+            Message = ok and "Removed — hub will no longer auto-load." or "Not found or already removed.",
+            Duration = 4,
+        })
+    end,
+})
+
 SetTab._btn.Visible = false
+
+-- ── Teleport detection — warn the user before the script is killed ────────────
+--  Roblox fires TeleportService.TeleportInitiated (client-side) just before the
+--  local game session ends for a teleport.  We use this to show a heads-up.
+task.spawn(function()
+    pcall(function()
+        local TS = game:GetService("TeleportService")
+        -- Some executors expose this signal; others don't
+        TS.LocalPlayerArrivedFromTeleport:Connect(function()
+            -- We arrived in a new game — nothing to do, script will re-run from autoexec
+        end)
+    end)
+
+    -- Universal fallback: watch for the game's DataModel being destroyed
+    -- (happens right before teleport / game close)
+    game.Close:Connect(function()
+        -- Try a quick silent autoexec save so the next game gets the hub
+        _trySaveAutoexec(true)
+    end)
+
+    -- Also watch for a "loading screen" GUI appearing which usually precedes
+    -- a teleport in games that show one
+    pcall(function()
+        local CG = game:GetService("CoreGui")
+        CG.DescendantAdded:Connect(function(d)
+            if d.Name == "LoadingGui" or d.Name == "TeleportGui" then
+                Hub:Notify({
+                    Title   = "⚠ Teleport Detected",
+                    Message = "Script will need re-inject unless autoexec is set up.",
+                    Duration = 4,
+                })
+            end
+        end)
+    end)
+end)
 
 -- ════════════════════════════════════════════════════════════════════════════════
 -- ──  PANIC KEY WIRING
@@ -1638,6 +1915,7 @@ _panicShutdown = function()
     pcall(clearESP)
     pcall(_stopAimbot)
     pcall(function() _abSilent = false; _saLocked = nil end)
+    pcall(_stopSilentAimClick)
     pcall(_stopTrigger)
     pcall(_stopNoRecoil)
     pcall(_unhookNoSpread)
@@ -1696,12 +1974,12 @@ _G.PhantomHub = {
 
 -- ── Startup Notification ──────────────────────────────────────
 Hub:Notify({
-    Title = "Phantom v3.3",
-    Message = "J=menu  |  Del=PANIC  |  Better aimbot + Silent Aim + ESP respawn fix",
+    Title = "Phantom v3.4",
+    Message = "J=menu  |  Del=PANIC  |  FOV circle · Lock fix · Recoil fix · Silent Aim · Autoexec",
     Duration = 6,
 })
 
-print("[Phantom] v3.2 loaded!")
+print("[Phantom] v3.4 loaded!")
 print("[Phantom] ✅ Best Aimbot (Dex5 + Dex6)")
 print("[Phantom] ✅ Your ESP")
 print("[Phantom] ✅ Teleport/Server Hop/Auto Rejoin")
