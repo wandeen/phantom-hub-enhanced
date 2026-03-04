@@ -22,7 +22,7 @@ loadstring(game:HttpGet(REPO_URL .. "/Hub_Enhanced.lua"))()
 TO USE:
 
 Copy this and paste in your executor:
-loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/wandeen/phantom-hub-enhanced/main/Hub_Enhanced.lua"))()
 
 Replace YOUR_USERNAME with your actual GitHub username!
 
