@@ -1,0 +1,448 @@
+═══════════════════════════════════════════════════════════════════════════════════
+PHANTOM HUB ENHANCED - GITHUB SETUP GUIDE
+═══════════════════════════════════════════════════════════════════════════════════
+
+This guide shows how to set up your Phantom Enhanced hub on GitHub so you can:
+  • Load from anywhere via loadstring(game:HttpGet(...))()
+  • Keep your code up-to-date automatically
+  • Share with others (or keep private)
+  • Version control everything
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+STEP 1: CREATE GITHUB REPOSITORY
+───────────────────────────────────────────────────────────────────────────────────
+
+1. Go to https://github.com/new
+2. Create new repository
+3. Name it: "phantom-hub-enhanced" (or whatever you want)
+4. Description: "Enhanced Phantom Hub with Event Hooks, Noclip, Logging, etc"
+5. Choose:
+   ☐ Public (anyone can see/use it)
+   ☐ Private (only you can access)
+6. DO NOT check "Initialize this repository with a README" (we already have one)
+7. Click "Create repository"
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+STEP 2: UNDERSTAND RAW URLS
+───────────────────────────────────────────────────────────────────────────────────
+
+GitHub file URLs come in two formats:
+
+REGULAR URL (shows webpage):
+  https://github.com/YourUsername/phantom-hub-enhanced/blob/main/Hub_Enhanced.lua
+  └─ This is the pretty webpage, NOT usable for loadstring
+
+RAW URL (returns pure file content):
+  https://raw.githubusercontent.com/YourUsername/phantom-hub-enhanced/main/Hub_Enhanced.lua
+  └─ This is what you need for loadstring(game:HttpGet(...))()
+
+KEY DIFFERENCE:
+  • Replace "github.com/YourUsername/YourRepo/blob/main" with "raw.githubusercontent.com/YourUsername/YourRepo/main"
+  • Or click "Raw" button on GitHub webpage to get the raw URL
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+STEP 3: UPLOAD FILES TO GITHUB (WEB METHOD)
+───────────────────────────────────────────────────────────────────────────────────
+
+EASY WAY - Use GitHub Web Interface:
+
+1. Go to your new repository
+2. Click "Add file" → "Upload files"
+3. Drag & drop OR select these 12 files:
+   ✓ Hub_Enhanced.lua
+   ✓ 1_EventHooks.lua
+   ✓ 2_NoclipSystem.lua
+   ✓ 3_LoggingSystem.lua
+   ✓ 4_AliasSystem.lua
+   ✓ 5_AutoKeyPressSystem.lua
+   ✓ 6_PluginSystem.lua
+   ✓ 7_KeybindUI.lua
+   ✓ README.txt
+   ✓ SETUP_WALKTHROUGH.lua
+   ✓ QUICK_REFERENCE.lua
+   ✓ INTEGRATION_GUIDE.lua
+4. Scroll down to "Commit changes"
+5. Message: "Initial commit: Add Phantom Hub Enhanced"
+6. Click "Commit changes"
+
+DONE! Files are now on GitHub.
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+STEP 4: CREATE LOADSTRING SCRIPT
+───────────────────────────────────────────────────────────────────────────────────
+
+Create a NEW FILE called "Main.lua" (or whatever you want):
+
+--[[ Main loader script - put this in your executor ]]
+
+local REPO_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main"
+
+local function loadModule(filename)
+    local url = REPO_URL .. "/" .. filename
+    local ok, result = pcall(function()
+        return loadstring(game:HttpGet(url))()
+    end)
+    if ok then
+        print("[Phantom] Loaded: " .. filename)
+        return result
+    else
+        warn("[Phantom] Failed to load " .. filename .. ": " .. tostring(result))
+        return nil
+    end
+end
+
+-- Load main hub
+loadstring(game:HttpGet(REPO_URL .. "/Hub_Enhanced.lua"))()
+
+---
+
+TO USE:
+
+Copy this and paste in your executor:
+loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua"))()
+
+Replace YOUR_USERNAME with your actual GitHub username!
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+STEP 5: UPDATE HUB_ENHANCED.LUA FOR GITHUB LOADING
+───────────────────────────────────────────────────────────────────────────────────
+
+YOUR CURRENT Hub_Enhanced.lua tries to load modules via readfile() (local files).
+
+TO MAKE IT LOAD FROM GITHUB:
+
+Find this section near the top:
+
+    local function loadModules()
+        local modules = {
+            EventHooks = "1_EventHooks.lua",
+            Noclip = "2_NoclipSystem.lua",
+            ...
+        }
+        
+        for name, filename in pairs(modules) do
+            local ok, result = pcall(function()
+                local content = readfile(filename)    ← THIS LINE
+                return loadstring(content)()
+            end)
+        end
+    end
+
+CHANGE IT TO:
+
+    local GITHUB_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main"
+    
+    local function loadModules()
+        local modules = {
+            EventHooks = "1_EventHooks.lua",
+            Noclip = "2_NoclipSystem.lua",
+            ...
+        }
+        
+        for name, filename in pairs(modules) do
+            local ok, result = pcall(function()
+                local url = GITHUB_URL .. "/" .. filename
+                return loadstring(game:HttpGet(url))()
+            end)
+            
+            if ok and result then
+                _G[name] = result.new and result.new() or result
+                print("[Phantom] Loaded: " .. name)
+            else
+                print("[Phantom] Warning: Could not load " .. name)
+            end
+        end
+    end
+
+Replace YOUR_USERNAME with your GitHub username!
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+STEP 6: UPLOAD UPDATED HUB_ENHANCED.LUA
+───────────────────────────────────────────────────────────────────────────────────
+
+1. Go to your GitHub repository
+2. Click on Hub_Enhanced.lua file
+3. Click pencil icon (Edit this file)
+4. Paste your updated content
+5. Scroll down to "Commit changes"
+6. Message: "Update: Load modules from GitHub instead of local files"
+7. Click "Commit changes"
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+COMPLETE GITHUB URL STRUCTURE
+───────────────────────────────────────────────────────────────────────────────────
+
+Your repository layout on GitHub:
+
+phantom-hub-enhanced/
+├── Hub_Enhanced.lua                    (MAIN FILE)
+├── 1_EventHooks.lua
+├── 2_NoclipSystem.lua
+├── 3_LoggingSystem.lua
+├── 4_AliasSystem.lua
+├── 5_AutoKeyPressSystem.lua
+├── 6_PluginSystem.lua
+├── 7_KeybindUI.lua
+├── README.txt
+├── SETUP_WALKTHROUGH.lua
+├── QUICK_REFERENCE.lua
+├── INTEGRATION_GUIDE.lua
+└── Main.lua (optional - your loader script)
+
+RAW URLS FOR LOADSTRING:
+
+Hub_Enhanced.lua:
+  https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua
+
+EventHooks:
+  https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/1_EventHooks.lua
+
+(Same pattern for all other files - just replace the filename)
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+COMPLETE LOADER SCRIPT (Advanced)
+───────────────────────────────────────────────────────────────────────────────────
+
+Copy this into your executor to load everything from GitHub:
+
+--[[ PHANTOM HUB ENHANCED - GitHub Loader ]]
+local BASE_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main"
+
+-- Function to load a file from GitHub
+local function loadFile(filename)
+    local url = BASE_URL .. "/" .. filename
+    local ok, result = pcall(function()
+        return loadstring(game:HttpGet(url))()
+    end)
+    return ok, result
+end
+
+-- Load the main hub
+print("[Phantom] Loading Enhanced Hub from GitHub...")
+local ok, hub = loadFile("Hub_Enhanced.lua")
+
+if ok then
+    print("[Phantom] Hub loaded successfully!")
+    print("[Phantom] Press J to toggle menu")
+else
+    warn("[Phantom] Failed to load hub: " .. tostring(hub))
+end
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+SIMPLE ONE-LINER LOADER
+───────────────────────────────────────────────────────────────────────────────────
+
+Just execute this one line:
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua"))()
+
+That's it! Everything else loads automatically.
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+OPTIONAL: CREATE .GITIGNORE FILE
+───────────────────────────────────────────────────────────────────────────────────
+
+To prevent saving local data files to GitHub (phantom_*.json):
+
+1. In your repository, click "Add file" → "Create new file"
+2. Name: .gitignore
+3. Content:
+
+# Local data files (don't commit to GitHub)
+phantom_*.json
+*.json
+phantom_logs/
+
+# Editor files
+.DS_Store
+*.swp
+
+4. Commit
+
+Now your repo stays clean - only code, no player data!
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+OPTIONAL: CREATE CUSTOM README.MD (GitHub Style)
+───────────────────────────────────────────────────────────────────────────────────
+
+GitHub shows README.md files automatically on the repo homepage.
+
+Create README.md file on GitHub:
+
+# Phantom Hub Enhanced
+
+Universal Roblox exploit hub with advanced features.
+
+## Quick Start
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua"))()
+```
+
+Press `J` to toggle the menu.
+
+## Features
+
+- 🎯 Aimbot with FOV and smoothing
+- 👻 Noclip with visual indicator
+- 📝 Activity logging (chat & joins)
+- ⌨️ Auto key press & sequence recording
+- 🎮 Customizable keybinds (no code editing)
+- 🔗 Event hook system
+- 🔌 Plugin system
+
+## Keybinds
+
+| Key | Action |
+|-----|--------|
+| J | Toggle menu |
+| RightAlt | Aimbot |
+| N | Noclip |
+| F | Flight |
+| E | ESP |
+| Delete | Panic (disable everything) |
+
+## Documentation
+
+- README.txt - Overview
+- SETUP_WALKTHROUGH.lua - Step-by-step guide
+- QUICK_REFERENCE.lua - API docs
+
+## License
+
+For personal use only.
+
+---
+
+Save this and your repository will look professional!
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+UPDATING YOUR CODE ON GITHUB
+───────────────────────────────────────────────────────────────────────────────────
+
+When you make changes:
+
+1. Click on the file you want to edit
+2. Click the pencil icon
+3. Make your changes
+4. Scroll down → "Commit changes"
+5. Add a commit message (e.g., "Fix noclip speed bug")
+6. Click "Commit changes"
+
+The changes are live immediately!
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+SHARING YOUR HUB
+───────────────────────────────────────────────────────────────────────────────────
+
+OPTION 1: PUBLIC REPO
+  Share the raw URL with anyone:
+  https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua
+  
+  They execute:
+  loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua"))()
+
+OPTION 2: PRIVATE REPO + TOKEN ACCESS
+  If private, you need a GitHub token:
+  1. Settings → Developer settings → Personal access tokens → Tokens (classic)
+  2. Generate new token (classic)
+  3. Check "repo" permission
+  4. Generate and copy token
+  
+  Load with token:
+  loadstring(game:HttpGet("https://TOKEN:x-oauth-basic@raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua"))()
+
+OPTION 3: DISTRIBUTE A STANDALONE SCRIPT
+  Create your own one-liner loader that points to your repo
+  Share just the one-liner
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+FIND YOUR USERNAME & REPO
+───────────────────────────────────────────────────────────────────────────────────
+
+When on your GitHub page, the URL looks like:
+  https://github.com/YOUR_USERNAME/phantom-hub-enhanced
+
+Extract:
+  YOUR_USERNAME = the username part
+  phantom-hub-enhanced = the repo name
+
+Use these in your URLs!
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+TROUBLESHOOTING
+───────────────────────────────────────────────────────────────────────────────────
+
+PROBLEM: "HTTP 404 Not Found"
+SOLUTION:
+  1. Check your username is correct
+  2. Check repo name is correct
+  3. Check file exists in repo
+  4. Check raw URL (not regular GitHub URL)
+  5. Make sure you actually committed the files!
+
+PROBLEM: "Module not loading"
+SOLUTION:
+  1. Check GitHub has the file
+  2. Verify raw URL works in browser
+  3. Check there's no typo in Hub_Enhanced.lua
+  4. Look at executor console for error messages
+
+PROBLEM: "Can't access private repo"
+SOLUTION:
+  • Use GitHub token method (see OPTION 2 above)
+  • Or make repo public
+  • Or use local readfile() on your executor PC
+
+PROBLEM: "Changes not showing up"
+SOLUTION:
+  1. Make sure you clicked "Commit changes"
+  2. Wait 30 seconds for GitHub to propagate
+  3. Reload the raw URL in browser to verify
+  4. Clear executor cache (if applicable)
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+FINAL CHECKLIST
+───────────────────────────────────────────────────────────────────────────────────
+
+✓ Created GitHub repository
+✓ Uploaded all 12 files
+✓ Updated Hub_Enhanced.lua to load from GitHub
+✓ Tested loadstring one-liner in executor
+✓ Created .gitignore (optional but recommended)
+✓ Created professional README.md (optional)
+✓ Shared loadstring URL with friends (if desired)
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+YOUR FINAL ONE-LINER
+───────────────────────────────────────────────────────────────────────────────────
+
+Replace YOUR_USERNAME with your actual GitHub username:
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/phantom-hub-enhanced/main/Hub_Enhanced.lua"))()
+
+This loads EVERYTHING automatically from your GitHub repo!
+
+═══════════════════════════════════════════════════════════════════════════════════
+
+DONE! 🎉
+Your Phantom Hub Enhanced is now on GitHub and loadable from anywhere!
+
+═══════════════════════════════════════════════════════════════════════════════════
