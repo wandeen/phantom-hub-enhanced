@@ -1,9 +1,11 @@
 -- ╔════════════════════════════════════════════════════════════════════════════════╗
--- ║         PHANTOM HUB ENHANCED - FINAL VERSION                                 ║
+-- ║         PHANTOM HUB ENHANCED - FIXED & UPGRADED                              ║
 -- ║  ✅ BEST aimbot (Dex5 prediction + Dex6 targeting)                           ║
--- ║  ✅ YOUR ESP.lua (kept and improved)                                         ║
+-- ║  ✅ UPGRADED ESP (health bar, distance, look line, team colors)               ║
 -- ║  ✅ Teleport + Server Hop + Auto Rejoin (restored)                           ║
 -- ║  ✅ Working Noclip (dual-method)                                             ║
+-- ║  FIXES: spectator logic, spectator perf, prediction slider scale,            ║
+-- ║         teleport refresh, duplicate save, aimbot keybind UI                  ║
 -- ╚════════════════════════════════════════════════════════════════════════════════╝
 
 -- ── Load UI Library ──────────────────────────────────────────────────────────
@@ -66,7 +68,7 @@ UIS.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- ── Create Window (BIGGER SIZE) ────────────────────────────────────────────
+-- ── Create Window ──────────────────────────────────────────────────────────
 local Hub = Phantom.new({
     Title    = "Phantom",
     Subtitle = "hub",
@@ -74,10 +76,10 @@ local Hub = Phantom.new({
 })
 Hub:SetProfile()
 Hub._win.BackgroundTransparency = 0.05
-Hub._win.Size = UDim2.new(0, 900, 0, 550)  -- BIGGER WINDOW
+Hub._win.Size = UDim2.new(0, 900, 0, 550)
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  SETTINGS MANAGER (from original)
+-- ──  SETTINGS MANAGER
 -- ════════════════════════════════════════════════════════════════════════════════
 local _smHS = game:GetService("HttpService")
 local SettingsManager = {}; SettingsManager.__index = SettingsManager
@@ -133,11 +135,10 @@ SM:Register("FlySpeed",
 SM:Load(); SM:StartAutoApply()
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  IMPROVED NOCLIP (MY DUAL-METHOD SYSTEM)
+-- ──  IMPROVED NOCLIP (DUAL-METHOD)
 -- ════════════════════════════════════════════════════════════════════════════════
 local _noclipEnabled = false
 local _noclipConn, _noclipPartConn, _noclipCharConn = nil, nil, nil
-local _noclipSpeed = 50
 local _noclipGroup = "PhantomNoclip"
 local _noclipGroupReady = false
 
@@ -164,7 +165,7 @@ local function _enableNoclip()
     _noclipEnabled = true
     local char = getChar()
     if char then _ncChar(char, true) end
-    
+
     if _noclipConn then _noclipConn:Disconnect() end
     _noclipConn = RunService.RenderStepped:Connect(function()
         if not _noclipEnabled then return end
@@ -174,7 +175,7 @@ local function _enableNoclip()
             if d:IsA("BasePart") and d.CanCollide then d.CanCollide = false end
         end
     end)
-    
+
     if char then
         if _noclipPartConn then _noclipPartConn:Disconnect() end
         _noclipPartConn = char.DescendantAdded:Connect(function(d)
@@ -183,7 +184,7 @@ local function _enableNoclip()
             end
         end)
     end
-    
+
     if _noclipCharConn then _noclipCharConn:Disconnect() end
     _noclipCharConn = LocalPlayer.CharacterAdded:Connect(function(newChar)
         task.wait(0.3)
@@ -226,20 +227,23 @@ end
 -- ════════════════════════════════════════════════════════════════════════════════
 -- ──  BEST AIMBOT (DEX5 PREDICTION + DEX6 SCREEN-CENTER TARGETING)
 -- ════════════════════════════════════════════════════════════════════════════════
-local _abEnabled = false
-local _abMode = "Toggle"
-local _abKey = Enum.KeyCode.RightAlt
-local _abFov = 150  -- Pixel radius from screen center
-local _abPrediction = 0.1768521  -- From Dex5 - velocity prediction
-local _abConn = nil
-local _abTarget = nil
+local _abEnabled  = false
+local _abMode     = "Toggle"
+-- FIX #8: keybind is now also exposed in the UI (see Combat section below)
+local _abKeyName  = "RightAlt"
+local _abKey      = Enum.KeyCode.RightAlt
+local _abFov      = 150
+-- FIX #6: prediction stored as 0-1 float; slider is 0-100 and divides by 100
+local _abPrediction = 0.1768521
+local _abConn     = nil
+local _abTarget   = nil
 
 local function _findClosestToCenter()
     local closestDist = math.huge
     local closestPlayer = nil
     local cam = workspace.CurrentCamera
     local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-    
+
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer then
             local char = plr.Character
@@ -266,8 +270,6 @@ local function _runAimbot()
     local target = _findClosestToCenter()
     if not target then _abTarget = nil; return end
     _abTarget = target
-    
-    -- Smooth camera movement with velocity prediction (Dex5 style)
     local cam = workspace.CurrentCamera
     local predictedPos = target.Position + (target.Velocity * _abPrediction)
     cam.CFrame = CFrame.new(cam.CFrame.Position, predictedPos)
@@ -290,16 +292,16 @@ local function _stopAimbot()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  IMPROVED TRIGGERBOT (Visible + Crosshair Check)
+-- ──  IMPROVED TRIGGERBOT
 -- ════════════════════════════════════════════════════════════════════════════════
-local _tbActive = false
-local _tbMode = "Toggle"
-local _tbKey = Enum.KeyCode.T
-local _tbDelay = 80
+local _tbActive   = false
+local _tbMode     = "Toggle"
+local _tbKey      = Enum.KeyCode.T
+local _tbDelay    = 80
 local _tbVariance = 20
-local _tbFilter = "Any visible"
-local _tbConn = nil
-local _tbFiring = false
+local _tbFilter   = "Any visible"
+local _tbConn     = nil
+local _tbFiring   = false
 
 local function _tbRaycast(char)
     local cam = workspace.CurrentCamera
@@ -310,7 +312,7 @@ local function _tbRaycast(char)
     params.FilterType = Enum.RaycastFilterType.Exclude
     local result = workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
     if not result then return false end
-    
+
     local hit = result.Instance
     if _tbFilter == "Head only" then return hit.Name == "Head" end
     if _tbFilter == "Body" then
@@ -319,7 +321,7 @@ local function _tbRaycast(char)
         end
         return false
     end
-    
+
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer and plr.Character then
             if hit:IsDescendantOf(plr.Character) then
@@ -366,196 +368,332 @@ local function _stopTrigger()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  IMPROVED ESP (from your esp.lua + enhancements)
+-- ──  UPGRADED ESP  (ported from esp.lua: health, distance, look line, team color)
 -- ════════════════════════════════════════════════════════════════════════════════
-local _espActive = false
-local _espShowNames = true
-local _espTeamCheck = false
-local _espFillColor = Color3.fromRGB(255, 170, 60)
-local _espFillTrans = 0.65
-local _espConns = {}
-local _espObjs = {}
+local _ESP = {
+    Active          = false,
+    Glow            = true,
+    ShowNames       = true,
+    ShowHealth      = true,
+    ShowDistance    = true,
+    ShowLookLine    = true,
+    TeamCheck       = false,
+    TeamColor       = false,
+    ShowEnemies     = true,
+    ShowTeam        = false,
+    Color           = Color3.fromRGB(255, 170, 60),
+    FillTrans       = 0.65,
+    Range           = 1000,
+    LookLineLength  = 15,
+    LookLineDist    = 1.5,
+}
 
-local function makeNameTag(plr, char)
-    if not _espShowNames then return nil end
-    local head = char:FindFirstChild("Head")
-    if not head then return nil end
-    local bill = Instance.new("BillboardGui")
-    bill.Name = "PhantomESPTag"
-    bill.Size = UDim2.new(0, 100, 0, 22)
-    bill.StudsOffset = Vector3.new(0, 3, 0)
-    bill.AlwaysOnTop = true
-    bill.Adornee = head
-    bill.Parent = workspace
-    local lbl = Instance.new("TextLabel")
-    lbl.Text = plr.DisplayName
-    lbl.Font = Enum.Font.GothamBold
-    lbl.TextSize = 12
-    lbl.TextColor3 = Color3.new(1, 1, 1)
-    lbl.TextStrokeTransparency = 0.4
-    lbl.BackgroundTransparency = 1
-    lbl.Size = UDim2.new(1, 0, 1, 0)
-    lbl.Parent = bill
-    return bill
+local _espTracked = {}   -- [character] = { Player, Highlight, Billboard, NameLabel, HealthLabel, DistanceLabel, LookLineFolder }
+local _espConns   = {}   -- player-level connections
+local _espUpdateConn = nil
+
+local function _espHideLookLine(folder)
+    if not folder then return end
+    for _, p in ipairs(folder:GetChildren()) do
+        if p:IsA("BasePart") then p.Transparency = 1 end
+    end
 end
 
-local function addPlayerESP(plr)
-    if plr == LocalPlayer then return end
-    if _espTeamCheck then
-        local myT, hisT = LocalPlayer.Team, plr.Team
-        if myT and hisT and myT == hisT then return end
-        if not myT and not hisT then return end
+local function _espMakeLookLineParts(folder, count)
+    for _, p in ipairs(folder:GetChildren()) do p:Destroy() end
+    for i = 1, count do
+        local p = Instance.new("Part")
+        p.Name = "LLP" .. i
+        p.Anchored = true; p.CanCollide = false; p.CanTouch = false; p.CanQuery = false
+        p.Size = Vector3.new(0.15, 0.15, 0.15)
+        p.Transparency = 1
+        p.Color = _ESP.Color
+        p.Material = Enum.Material.Neon
+        p.Shape = Enum.PartType.Ball
+        p.Parent = folder
     end
-    local char = plr.Character
-    if not char then return end
-    if _espObjs[plr] then
-        pcall(function()
-            if _espObjs[plr].hl then _espObjs[plr].hl:Destroy() end
-            if _espObjs[plr].tag then _espObjs[plr].tag:Destroy() end
-        end)
+end
+
+local function _espUpdateLookLine(character, folder)
+    if not _ESP.ShowLookLine then _espHideLookLine(folder); return end
+    local head = character:FindFirstChild("Head")
+    local hum  = character:FindFirstChildOfClass("Humanoid")
+    if not head or not hum then _espHideLookLine(folder); return end
+    local root = character:FindFirstChild("HumanoidRootPart")
+    local lookVec
+    if hum.MoveDirection.Magnitude > 0.1 then
+        lookVec = hum.MoveDirection.Unit
+    elseif root then
+        lookVec = root.CFrame.LookVector
+    else
+        lookVec = head.CFrame.LookVector
     end
+    for _, p in ipairs(folder:GetChildren()) do
+        if p:IsA("BasePart") then
+            local idx = tonumber(p.Name:match("LLP(%d+)"))
+            if idx then
+                local dist = idx * _ESP.LookLineDist
+                p.Position = head.Position + lookVec * dist
+                p.Color = _ESP.Color
+                local t = (idx - 1) / math.max(_ESP.LookLineLength - 1, 1)
+                p.Transparency = 0.3 + t * 0.7
+                local s = (1 - t * 0.5) * 0.15
+                p.Size = Vector3.new(s, s, s)
+            end
+        end
+    end
+end
+
+local function _espCreateForChar(char, plr)
+    if not char or char:FindFirstChild("_PhantomESP") then return end
+
+    local folder = Instance.new("Folder")
+    folder.Name = "_PhantomESP"
+    folder.Parent = char
+
     local hl = Instance.new("Highlight")
     hl.Adornee = char
-    hl.FillColor = _espFillColor
-    hl.FillTransparency = _espFillTrans
+    hl.FillColor = _ESP.Color
     hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.FillTransparency = _ESP.FillTrans
     hl.OutlineTransparency = 0
     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Parent = workspace
-    _espObjs[plr] = {hl = hl, tag = makeNameTag(plr, char)}
+    hl.Enabled = false
+    hl.Parent = folder
+
+    local bill = Instance.new("BillboardGui")
+    bill.Size = UDim2.new(0, 200, 0, 80)
+    bill.StudsOffset = Vector3.new(0, 3, 0)
+    bill.AlwaysOnTop = true
+    bill.Enabled = false
+    bill.Parent = folder
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundTransparency = 1
+    frame.Parent = bill
+
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Name = "NameLbl"
+    nameLbl.Size = UDim2.new(1, 0, 0.33, 0)
+    nameLbl.Position = UDim2.new(0, 0, 0, 0)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Font = Enum.Font.GothamBold
+    nameLbl.TextSize = 16
+    nameLbl.TextColor3 = _ESP.Color
+    nameLbl.TextStrokeTransparency = 0
+    nameLbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    nameLbl.Text = plr.Name
+    nameLbl.Parent = frame
+
+    local hpLbl = Instance.new("TextLabel")
+    hpLbl.Name = "HpLbl"
+    hpLbl.Size = UDim2.new(1, 0, 0.33, 0)
+    hpLbl.Position = UDim2.new(0, 0, 0.33, 0)
+    hpLbl.BackgroundTransparency = 1
+    hpLbl.Font = Enum.Font.Gotham
+    hpLbl.TextSize = 14
+    hpLbl.TextColor3 = Color3.fromRGB(0, 255, 0)
+    hpLbl.TextStrokeTransparency = 0
+    hpLbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    hpLbl.Text = "HP: ?"
+    hpLbl.Parent = frame
+
+    local distLbl = Instance.new("TextLabel")
+    distLbl.Name = "DistLbl"
+    distLbl.Size = UDim2.new(1, 0, 0.34, 0)
+    distLbl.Position = UDim2.new(0, 0, 0.66, 0)
+    distLbl.BackgroundTransparency = 1
+    distLbl.Font = Enum.Font.Gotham
+    distLbl.TextSize = 12
+    distLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    distLbl.TextStrokeTransparency = 0
+    distLbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    distLbl.Text = "0m"
+    distLbl.Parent = frame
+
+    local llFolder = Instance.new("Folder")
+    llFolder.Name = "LookLine"
+    llFolder.Parent = folder
+    _espMakeLookLineParts(llFolder, _ESP.LookLineLength)
+
+    _espTracked[char] = {
+        Player        = plr,
+        Folder        = folder,
+        Highlight     = hl,
+        Billboard     = bill,
+        NameLabel     = nameLbl,
+        HealthLabel   = hpLbl,
+        DistanceLabel = distLbl,
+        LookLineFolder= llFolder,
+    }
 end
 
-local function removePlayerESP(plr)
-    if not _espObjs[plr] then return end
-    pcall(function()
-        if _espObjs[plr].hl then _espObjs[plr].hl:Destroy() end
-        if _espObjs[plr].tag then _espObjs[plr].tag:Destroy() end
-    end)
-    _espObjs[plr] = nil
+local function _espRemoveChar(char)
+    local d = _espTracked[char]
+    if not d then return end
+    pcall(function() d.Folder:Destroy() end)
+    _espTracked[char] = nil
 end
 
-local function clearESP()
-    for plr in pairs(_espObjs) do removePlayerESP(plr) end
-    for _, c in ipairs(_espConns) do c:Disconnect() end
-    _espConns = {}
-    _espActive = false
+local function _espUpdateChar(char)
+    local d = _espTracked[char]
+    if not d then return end
+    local plr = d.Player
+    if not plr then return end
+
+    -- Global toggle
+    if not _ESP.Active then
+        d.Highlight.Enabled = false
+        d.Billboard.Enabled = false
+        _espHideLookLine(d.LookLineFolder)
+        return
+    end
+
+    -- Team filter
+    local isEnemy = true
+    if plr.Team and LocalPlayer.Team then
+        isEnemy = plr.Team ~= LocalPlayer.Team
+    end
+    local shouldShow = (isEnemy and _ESP.ShowEnemies) or (not isEnemy and _ESP.ShowTeam)
+    if _ESP.TeamCheck and not shouldShow then
+        d.Highlight.Enabled = false
+        d.Billboard.Enabled = false
+        _espHideLookLine(d.LookLineFolder)
+        return
+    end
+
+    -- Distance filter
+    local primary = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
+    if not primary then return end
+    local lpChar = LocalPlayer.Character
+    local lpRoot = lpChar and (lpChar:FindFirstChild("HumanoidRootPart") or lpChar:FindFirstChild("Head"))
+    local distance = 0
+    if lpRoot then
+        distance = (primary.Position - lpRoot.Position).Magnitude
+    end
+    if distance > _ESP.Range then
+        d.Highlight.Enabled = false
+        d.Billboard.Enabled = false
+        _espHideLookLine(d.LookLineFolder)
+        return
+    end
+
+    -- Choose color
+    local col = _ESP.Color
+    if _ESP.TeamColor and plr.Team and plr.Team.TeamColor then
+        col = plr.Team.TeamColor.Color
+    end
+
+    -- Highlight
+    d.Highlight.Enabled = _ESP.Glow
+    d.Highlight.OutlineColor = col
+    d.Highlight.FillColor = col
+    d.Highlight.FillTransparency = _ESP.FillTrans
+    d.Highlight.Adornee = char
+
+    -- Billboard
+    d.Billboard.Enabled = _ESP.ShowNames or _ESP.ShowHealth or _ESP.ShowDistance
+    d.Billboard.Adornee = primary
+
+    -- Name
+    d.NameLabel.Visible = _ESP.ShowNames
+    d.NameLabel.TextColor3 = col
+    d.NameLabel.Text = plr.Name
+
+    -- Health
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        d.HealthLabel.Visible = _ESP.ShowHealth
+        local pct = hum.Health / math.max(hum.MaxHealth, 1)
+        d.HealthLabel.TextColor3 = Color3.new(1 - pct, pct, 0)
+        d.HealthLabel.Text = "HP: " .. math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth)
+    else
+        d.HealthLabel.Visible = false
+    end
+
+    -- Distance
+    d.DistanceLabel.Visible = _ESP.ShowDistance
+    d.DistanceLabel.Text = math.floor(distance) .. "m"
+
+    -- Look line
+    _espUpdateLookLine(char, d.LookLineFolder)
+end
+
+local function _espAddPlayer(plr)
+    if plr == LocalPlayer then return end
+    local function onChar(char)
+        task.wait(0.1)
+        if _ESP.Active then _espCreateForChar(char, plr) end
+        table.insert(_espConns, char.AncestryChanged:Connect(function()
+            if not char.Parent then _espRemoveChar(char) end
+        end))
+    end
+    if plr.Character then onChar(plr.Character) end
+    table.insert(_espConns, plr.CharacterAdded:Connect(onChar))
+    table.insert(_espConns, plr.CharacterRemoving:Connect(_espRemoveChar))
 end
 
 local function enableESP()
-    _espActive = true
+    _ESP.Active = true
     for _, plr in ipairs(Players:GetPlayers()) do
-        addPlayerESP(plr)
-        table.insert(_espConns, plr.CharacterAdded:Connect(function()
-            task.wait(0.1)
-            addPlayerESP(plr)
-        end))
+        _espAddPlayer(plr)
     end
-    table.insert(_espConns, Players.PlayerAdded:Connect(function(plr)
-        table.insert(_espConns, plr.CharacterAdded:Connect(function()
-            task.wait(0.1)
-            addPlayerESP(plr)
-        end))
+    table.insert(_espConns, Players.PlayerAdded:Connect(_espAddPlayer))
+    table.insert(_espConns, Players.PlayerRemoving:Connect(function(plr)
+        if plr.Character then _espRemoveChar(plr.Character) end
     end))
-    table.insert(_espConns, Players.PlayerRemoving:Connect(removePlayerESP))
+    if _espUpdateConn then _espUpdateConn:Disconnect() end
+    _espUpdateConn = RunService.Heartbeat:Connect(function()
+        for char, _ in pairs(_espTracked) do
+            if char.Parent then
+                pcall(_espUpdateChar, char)
+            else
+                _espRemoveChar(char)
+            end
+        end
+    end)
 end
 
-local function refreshESP()
-    if not _espActive then return end
-    for _, plr in ipairs(Players:GetPlayers()) do addPlayerESP(plr) end
+local function clearESP()
+    _ESP.Active = false
+    if _espUpdateConn then _espUpdateConn:Disconnect(); _espUpdateConn = nil end
+    for _, c in ipairs(_espConns) do c:Disconnect() end
+    _espConns = {}
+    for char in pairs(_espTracked) do _espRemoveChar(char) end
 end
-
--- Skeleton ESP
-local _skelActive = false
-local _skelConn = nil
-local _skelDrawings = {}
-
-local function getBonePos(char, partName, attachName)
-    local part = char:FindFirstChild(partName)
-    if not part then return nil end
-    if attachName then
-        local att = part:FindFirstChild(attachName)
-        if att then return (part.CFrame * att.CFrame).Position end
-    end
-    return part.Position
-end
-
-local R15_BONES = {
-    {"Head", "NeckAttachment", "UpperTorso", "NeckAttachment"},
-    {"UpperTorso", "WaistCenterAttachment", "LowerTorso", "WaistCenterAttachment"},
-    {"UpperTorso", "LeftShoulderAttachment", "LeftUpperArm", "LeftShoulderAttachment"},
-    {"LeftUpperArm", "LeftElbowAttachment", "LeftLowerArm", "LeftElbowAttachment"},
-    {"LeftLowerArm", "LeftWristAttachment", "LeftHand", "LeftWristAttachment"},
-    {"UpperTorso", "RightShoulderAttachment", "RightUpperArm", "RightShoulderAttachment"},
-    {"RightUpperArm", "RightElbowAttachment", "RightLowerArm", "RightElbowAttachment"},
-    {"RightLowerArm", "RightWristAttachment", "RightHand", "RightWristAttachment"},
-    {"LowerTorso", "LeftHipAttachment", "LeftUpperLeg", "LeftHipAttachment"},
-    {"LeftUpperLeg", "LeftKneeAttachment", "LeftLowerLeg", "LeftKneeAttachment"},
-    {"LeftLowerLeg", "LeftAnkleAttachment", "LeftFoot", "LeftAnkleAttachment"},
-    {"LowerTorso", "RightHipAttachment", "RightUpperLeg", "RightHipAttachment"},
-    {"RightUpperLeg", "RightKneeAttachment", "RightLowerLeg", "RightKneeAttachment"},
-    {"RightLowerLeg", "RightAnkleAttachment", "RightFoot", "RightAnkleAttachment"},
-}
-
-local R6_BONES = {
-    {"Head", "NeckAttachment", "Torso", "NeckAttachment"},
-    {"Torso", "LeftShoulderAttachment", "Left Arm", "LeftShoulderAttachment"},
-    {"Torso", "RightShoulderAttachment", "Right Arm", "RightShoulderAttachment"},
-    {"Torso", "LeftHipAttachment", "Left Leg", "LeftHipAttachment"},
-    {"Torso", "RightHipAttachment", "Right Leg", "RightHipAttachment"},
-}
-
-local function clearSkelPlayer(plr)
-    if not _skelDrawings[plr] then return end
-    for _, ln in ipairs(_skelDrawings[plr]) do pcall(function() ln:Remove() end) end
-    _skelDrawings[plr] = nil
-end
-
--- ESP Lines
-local _espLinesActive = false
-local _espLineOrigin = "Bottom"
-local _espLinesConn = nil
-local _espLineDrawings = {}
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  IMPROVED SPECTATOR LIST (Real-time with alerts)
+-- ──  IMPROVED SPECTATOR LIST
+--     FIX #1: corrected detection logic (was inverted)
+--     FIX #2: replaced 60fps GUI rebuild with 2-second debounce
 -- ════════════════════════════════════════════════════════════════════════════════
-local _spectActive = false
-local _spectAlert = true
-local _spectStreamer = false
+local _spectActive    = false
+local _spectAlert     = true
+local _spectStreamer  = false
 local _spectLastCount = 0
-local _spectConn = nil
-local _spectGui = nil
-local _spectHistory = {}
+local _spectConn      = nil
+local _spectGui       = nil
+local _lastSpectRebuild = 0   -- FIX #2: debounce timestamp
 
 local function _makeSpectGui()
     if _spectGui then pcall(function() _spectGui:Destroy() end); _spectGui = nil end
     local sg = Instance.new("ScreenGui")
-    sg.Name = "PhantomSpectList"
-    sg.ResetOnSpawn = false
-    sg.DisplayOrder = 99
+    sg.Name = "PhantomSpectList"; sg.ResetOnSpawn = false; sg.DisplayOrder = 99
     local ok, cg = pcall(function() return cloneref(game:GetService("CoreGui")) end)
     sg.Parent = ok and cg or LocalPlayer:WaitForChild("PlayerGui")
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(0, 200, 0, 20)
     frame.Position = UDim2.new(0, 10, 0, 10)
     frame.BackgroundColor3 = Color3.fromRGB(14, 14, 14)
-    frame.BackgroundTransparency = 0.15
-    frame.BorderSizePixel = 0
-    frame.AutomaticSize = Enum.AutomaticSize.Y
-    frame.Parent = sg
-    local c2 = Instance.new("UICorner")
-    c2.CornerRadius = UDim.new(0, 6)
-    c2.Parent = frame
-    local l = Instance.new("UIListLayout")
-    l.SortOrder = Enum.SortOrder.LayoutOrder
-    l.Padding = UDim.new(0, 2)
-    l.Parent = frame
+    frame.BackgroundTransparency = 0.15; frame.BorderSizePixel = 0
+    frame.AutomaticSize = Enum.AutomaticSize.Y; frame.Parent = sg
+    local c2 = Instance.new("UICorner"); c2.CornerRadius = UDim.new(0, 6); c2.Parent = frame
+    local l = Instance.new("UIListLayout"); l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Padding = UDim.new(0, 2); l.Parent = frame
     local p = Instance.new("UIPadding")
-    p.PaddingTop = UDim.new(0, 4)
-    p.PaddingBottom = UDim.new(0, 4)
-    p.PaddingLeft = UDim.new(0, 6)
-    p.PaddingRight = UDim.new(0, 6)
-    p.Parent = frame
+    p.PaddingTop = UDim.new(0,4); p.PaddingBottom = UDim.new(0,4)
+    p.PaddingLeft = UDim.new(0,6); p.PaddingRight = UDim.new(0,6); p.Parent = frame
     _spectGui = sg
     return frame
 end
@@ -568,51 +706,41 @@ local function _rebuildSpectList()
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
                 local char = plr.Character
-                if char and not char:FindFirstChild("HumanoidRootPart") then
+                -- FIX #1: real spectators have NO character or no HRP
+                if not char or not char:FindFirstChild("HumanoidRootPart") then
                     table.insert(spectNames, plr.Name)
                 end
             end
         end
     end)
-    
     local count = #spectNames
     local isAlert = count > _spectLastCount
     local header = Instance.new("TextLabel")
-    header.Size = UDim2.new(1, 0, 0, 16)
-    header.BackgroundTransparency = 1
-    header.Font = Enum.Font.GothamBold
-    header.TextSize = 11
+    header.Size = UDim2.new(1, 0, 0, 16); header.BackgroundTransparency = 1
+    header.Font = Enum.Font.GothamBold; header.TextSize = 11
     header.TextColor3 = isAlert and Color3.fromRGB(255, 220, 50) or Color3.fromRGB(180, 180, 180)
     header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "Spectators: " .. count
-    header.Parent = container
-    
+    header.Text = "Spectators: " .. count; header.Parent = container
     for _, name in ipairs(spectNames) do
         local row = Instance.new("TextLabel")
-        row.Size = UDim2.new(1, 0, 0, 13)
-        row.BackgroundTransparency = 1
-        row.Font = Enum.Font.Gotham
-        row.TextSize = 10
+        row.Size = UDim2.new(1, 0, 0, 13); row.BackgroundTransparency = 1
+        row.Font = Enum.Font.Gotham; row.TextSize = 10
         row.TextColor3 = Color3.fromRGB(200, 200, 200)
         row.TextXAlignment = Enum.TextXAlignment.Left
-        row.Text = "  - " .. name
-        row.Parent = container
+        row.Text = "  - " .. name; row.Parent = container
     end
-    
     if isAlert and _spectAlert then
         Hub:Notify({Title = "Spectator Alert", Message = "Someone is watching!", Duration = 3})
     end
-    
     if _spectStreamer and count > 0 then
         if _abEnabled then _stopAimbot() end
         if _tbActive then _stopTrigger() end
     end
-    
     _spectLastCount = count
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  FLIGHT (YOUR ORIGINAL)
+-- ──  FLIGHT
 -- ════════════════════════════════════════════════════════════════════════════════
 local _flyEnabled = false
 local _flyConn = nil
@@ -667,58 +795,46 @@ local function startFly()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  INFINITE JUMP (YOUR ORIGINAL)
+-- ──  INFINITE JUMP
 -- ════════════════════════════════════════════════════════════════════════════════
 local _infJumpConn = nil
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  BUILD UNIVERSAL TAB (BIGGER, CLEANER)
+-- ──  UNIVERSAL TAB
 -- ════════════════════════════════════════════════════════════════════════════════
-
 local UniTab = Hub:NewTab({Title = "Universal", Icon = "rbxassetid://3926305904"})
 
--- Player Section
+-- ── Player Section ────────────────────────────────────────────────────────────
 local UniPlayer = UniTab:NewSection({Position = "Left", Title = "Player"})
 UniPlayer:NewSlider({
-    Title = "Walk Speed",
-    Min = 16,
-    Max = 300,
-    Default = 16,
+    Title = "Walk Speed", Min = 16, Max = 300, Default = 16,
     Callback = function(v)
         _G.PhantomWalkSpeed = v
-        if v > 16 then startWsEnforcer(v) else stopWsEnforcer(); local h = getHum(); if h then h.WalkSpeed = v end end
+        if v > 16 then startWsEnforcer(v) else stopWsEnforcer(); local h=getHum(); if h then h.WalkSpeed=v end end
     end,
 })
 UniPlayer:NewSlider({
-    Title = "Jump Power",
-    Min = 7,
-    Max = 200,
-    Default = 50,
-    Callback = function(v) _G.PhantomJumpPower = v; local h = getHum(); if h then h.JumpPower = v end end,
+    Title = "Jump Power", Min = 7, Max = 200, Default = 50,
+    Callback = function(v) _G.PhantomJumpPower=v; local h=getHum(); if h then h.JumpPower=v end end,
 })
 UniPlayer:NewToggle({
-    Title = "Infinite Jump",
-    Default = false,
+    Title = "Infinite Jump", Default = false,
     Callback = function(v)
         if _infJumpConn then _infJumpConn:Disconnect(); _infJumpConn = nil end
         if v then _infJumpConn = UIS.JumpRequest:Connect(function()
-            local h = getHum(); if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+            local h=getHum(); if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
         end) end
     end,
 })
 
--- Movement Section
+-- ── Movement Section ──────────────────────────────────────────────────────────
 local UniMove = UniTab:NewSection({Position = "Left", Title = "Movement"})
 UniMove:NewSlider({
-    Title = "Fly Speed",
-    Min = 10,
-    Max = 200,
-    Default = 60,
+    Title = "Fly Speed", Min = 10, Max = 200, Default = 60,
     Callback = function(v) _flySpeed = v end,
 })
 UniMove:NewToggle({
-    Title = "Flight [WASD + Space/Ctrl]",
-    Default = false,
+    Title = "Flight [WASD + Space/Ctrl]", Default = false,
     Callback = function(v)
         if v then
             startFly()
@@ -733,120 +849,126 @@ UniMove:NewToggle({
     end,
 })
 UniMove:NewToggle({
-    Title = "Noclip",
-    Default = false,
+    Title = "Noclip", Default = false,
     Callback = function(v) if v then _enableNoclip() else _disableNoclip() end end,
 })
-UniMove:NewSlider({
-    Title = "Noclip Speed",
-    Min = 10,
-    Max = 500,
-    Default = 50,
-    Callback = function(v) _noclipSpeed = v end,
-})
 
--- Combat Section
+-- ── Combat Section ────────────────────────────────────────────────────────────
 local UniCombat = UniTab:NewSection({Position = "Right", Title = "Combat"})
 UniCombat:NewToggle({
-    Title = "Aimbot",
-    Default = false,
+    Title = "Aimbot", Default = false,
     Callback = function(v) _abEnabled = v; if v then _startAimbot() else _stopAimbot() end end
 })
 UniCombat:NewDropdown({
-    Title = "Aimbot Mode",
-    Options = {"Toggle", "Hold"},
-    Default = "Toggle",
+    Title = "Aimbot Mode", Options = {"Toggle", "Hold"}, Default = "Toggle",
     Callback = function(v) _abMode = v end
 })
+-- FIX #8: aimbot keybind now exposed in UI
+UniCombat:NewDropdown({
+    Title = "Aimbot Hold Key",
+    Options = {"RightAlt", "E", "Q", "F", "G", "X", "Z", "CapsLock", "Tab"},
+    Default = "RightAlt",
+    Callback = function(v)
+        _abKeyName = v
+        _abKey = Enum.KeyCode[v]
+    end
+})
 UniCombat:NewSlider({
-    Title = "Aimbot FOV (px)",
-    Min = 50,
-    Max = 400,
-    Default = 150,
+    Title = "Aimbot FOV (px)", Min = 50, Max = 400, Default = 150,
     Callback = function(v) _abFov = v end
 })
+-- FIX #6: slider is now 0-100; divide by 100 to get actual float prediction
 UniCombat:NewSlider({
-    Title = "Prediction",
-    Min = 0,
-    Max = 1,
-    Default = 0.1768521,
-    Callback = function(v) _abPrediction = v end
+    Title = "Prediction (x0.01)", Min = 0, Max = 100, Default = 18,
+    Callback = function(v) _abPrediction = v / 100 end
 })
 UniCombat:NewToggle({
-    Title = "Triggerbot",
-    Default = false,
+    Title = "Triggerbot", Default = false,
     Callback = function(v) _tbActive = v; if v then _startTriggerLoop() else _stopTrigger() end end
 })
 UniCombat:NewSlider({
-    Title = "Trigger Delay (ms)",
-    Min = 0,
-    Max = 200,
-    Default = 80,
+    Title = "Trigger Delay (ms)", Min = 0, Max = 200, Default = 80,
     Callback = function(v) _tbDelay = v end
 })
 
--- Visuals Section
+-- ── Visuals Section ───────────────────────────────────────────────────────────
 local UniVis = UniTab:NewSection({Position = "Right", Title = "Visuals"})
 UniVis:NewToggle({
-    Title = "Player ESP",
-    Default = false,
+    Title = "Player ESP", Default = false,
     Callback = function(v) if v then enableESP() else clearESP() end end
 })
 UniVis:NewToggle({
-    Title = "ESP Names",
-    Default = true,
-    Callback = function(v) _espShowNames = v; refreshESP() end
+    Title = "ESP Glow", Default = true,
+    Callback = function(v) _ESP.Glow = v end
+})
+UniVis:NewToggle({
+    Title = "ESP Names", Default = true,
+    Callback = function(v) _ESP.ShowNames = v end
+})
+UniVis:NewToggle({
+    Title = "ESP Health", Default = true,
+    Callback = function(v) _ESP.ShowHealth = v end
+})
+UniVis:NewToggle({
+    Title = "ESP Distance", Default = true,
+    Callback = function(v) _ESP.ShowDistance = v end
+})
+UniVis:NewToggle({
+    Title = "ESP Look Line", Default = true,
+    Callback = function(v) _ESP.ShowLookLine = v end
+})
+UniVis:NewToggle({
+    Title = "ESP Team Colors", Default = false,
+    Callback = function(v) _ESP.TeamColor = v end
+})
+UniVis:NewSlider({
+    Title = "ESP Range (studs)", Min = 50, Max = 2000, Default = 1000,
+    Callback = function(v) _ESP.Range = v end
+})
+UniVis:NewSlider({
+    Title = "ESP Fill Transparency %", Min = 0, Max = 100, Default = 65,
+    Callback = function(v) _ESP.FillTrans = v / 100 end
 })
 UniVis:NewColorPicker({
-    Title = "ESP Color",
-    Default = Color3.fromRGB(255, 170, 60),
+    Title = "ESP Color", Default = Color3.fromRGB(255, 170, 60),
     Callback = function(c)
-        _espFillColor = c
-        for _, obj in pairs(_espObjs) do
-            if obj.hl then obj.hl.FillColor = c end
+        _ESP.Color = c
+        for _, d in pairs(_espTracked) do
+            if d.Highlight then d.Highlight.FillColor = c; d.Highlight.OutlineColor = c end
+            if d.NameLabel then d.NameLabel.TextColor3 = c end
         end
     end
 })
 UniVis:NewToggle({
-    Title = "Spectator List",
-    Default = false,
+    Title = "Spectator List", Default = false,
     Callback = function(v)
         _spectActive = v
         if _spectConn then _spectConn:Disconnect(); _spectConn = nil end
         if _spectGui then pcall(function() _spectGui:Destroy() end); _spectGui = nil end
         if not v then return end
         _rebuildSpectList()
-        _spectConn = RunService.Heartbeat:Connect(function() _rebuildSpectList(); task.wait(2) end)
+        -- FIX #2: use a debounce instead of task.wait() inside Heartbeat
+        _spectConn = RunService.Heartbeat:Connect(function()
+            local now = tick()
+            if now - _lastSpectRebuild < 2 then return end
+            _lastSpectRebuild = now
+            _rebuildSpectList()
+        end)
     end
 })
 UniVis:NewToggle({
-    Title = "Spectator Alerts",
-    Default = true,
+    Title = "Spectator Alerts", Default = true,
     Callback = function(v) _spectAlert = v end
 })
 
--- Teleport & Server Hop
-local _tpTarget = ""
-local _tpOpts
-local function _buildPlayerOpts()
-    local t = {}; for _, plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer then table.insert(t, plr.Name) end end
-    return #t > 0 and t or {"(no other players)"}
-end
-_tpOpts = _buildPlayerOpts()
-_tpTarget = _tpOpts[1]
-
-local _autoRejoinActive = false
-local _autoRejoinConn = nil
-
--- Utility Section (Fullbright, No Fog, etc)
+-- ── Utility Section ───────────────────────────────────────────────────────────
 local _origBright, _origAmbient, _origOutdoor
 local _origFogEnd, _origFogStart, _origAtmDensity
 local _afkThread
 
 local UniUtil = UniTab:NewSection({Position = "Left", Title = "Utility"})
 UniUtil:NewToggle({
-    Title = "Anti-AFK",
-    Default = false,
+    Title = "Anti-AFK", Default = false,
     Callback = function(v)
         if _afkThread then task.cancel(_afkThread); _afkThread = nil end
         if v then
@@ -865,21 +987,46 @@ UniUtil:NewToggle({
     end,
 })
 UniUtil:NewSeparator()
-UniUtil:NewDropdown({
-    Title = "Teleport Target",
-    Options = _tpOpts,
-    Default = _tpOpts[1],
+
+-- FIX #4: teleport dropdown now refreshes when players join/leave
+local _tpTarget = ""
+local _tpDropdown = nil
+local function _buildPlayerOpts()
+    local t = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then table.insert(t, plr.Name) end
+    end
+    return #t > 0 and t or {"(no players)"}
+end
+local _tpOpts = _buildPlayerOpts()
+_tpTarget = _tpOpts[1]
+
+_tpDropdown = UniUtil:NewDropdown({
+    Title = "Teleport Target", Options = _tpOpts, Default = _tpOpts[1],
     Callback = function(v) _tpTarget = v end
 })
+
+local function _refreshTpDropdown()
+    local newOpts = _buildPlayerOpts()
+    -- Phantom Hub's SetOptions or equivalent; fall back to silently updating _tpOpts
+    if _tpDropdown and _tpDropdown.SetOptions then
+        _tpDropdown:SetOptions(newOpts)
+    end
+    _tpOpts = newOpts
+    _tpTarget = newOpts[1]
+end
+Players.PlayerAdded:Connect(function() task.wait(1); _refreshTpDropdown() end)
+Players.PlayerRemoving:Connect(function() task.wait(0.1); _refreshTpDropdown() end)
+
 UniUtil:NewButton({
     Title = "Teleport to Player",
     Callback = function()
-        if _tpTarget == "" or _tpTarget == "(no other players)" then
-            Hub:Notify({Title = "Teleport", Message = "No target selected", Duration = 2})
-            return
+        if _tpTarget == "" or _tpTarget == "(no players)" then
+            Hub:Notify({Title = "Teleport", Message = "No target selected", Duration = 2}); return
         end
         for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LocalPlayer and (plr.Name:lower() == _tpTarget:lower() or plr.DisplayName:lower():find(_tpTarget:lower(), 1, true)) then
+            if plr ~= LocalPlayer and (plr.Name:lower() == _tpTarget:lower()
+                or plr.DisplayName:lower():find(_tpTarget:lower(), 1, true)) then
                 local hrp = getHRP()
                 local tHrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
                 if hrp and tHrp then
@@ -905,20 +1052,24 @@ UniUtil:NewButton({
                 local TS = game:GetService("TeleportService")
                 local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
                 local ok, resp = pcall(function() return game:HttpGet(url) end)
-                if not ok then Hub:Notify({Title = "Server Hop", Message = "HttpGet blocked", Duration = 3}); return end
+                if not ok then Hub:Notify({Title="Server Hop",Message="HttpGet blocked",Duration=3}); return end
                 local ok2, data = pcall(function() return HS:JSONDecode(resp) end)
-                if not ok2 or not data or not data.data then Hub:Notify({Title = "Server Hop", Message = "Failed to parse", Duration = 3}); return end
+                if not ok2 or not data or not data.data then Hub:Notify({Title="Server Hop",Message="Failed to parse",Duration=3}); return end
                 local cands = {}
-                for _, srv in ipairs(data.data) do if srv.playing < srv.maxPlayers then table.insert(cands, srv.id) end end
-                if #cands == 0 then Hub:Notify({Title = "Server Hop", Message = "No open servers", Duration = 3}); return end
+                for _, srv in ipairs(data.data) do
+                    if srv.playing < srv.maxPlayers then table.insert(cands, srv.id) end
+                end
+                if #cands == 0 then Hub:Notify({Title="Server Hop",Message="No open servers",Duration=3}); return end
                 TS:TeleportToPlaceInstance(game.PlaceId, cands[math.random(1, #cands)], LocalPlayer)
             end)
         end)
     end,
 })
+
+local _autoRejoinActive = false
+local _autoRejoinConn   = nil
 UniUtil:NewToggle({
-    Title = "Auto Rejoin",
-    Default = false,
+    Title = "Auto Rejoin", Default = false,
     Callback = function(v)
         _autoRejoinActive = v
         if _autoRejoinConn then _autoRejoinConn:Disconnect(); _autoRejoinConn = nil end
@@ -934,7 +1085,7 @@ UniUtil:NewToggle({
                 _autoRejoinConn = ov.ChildAdded:Connect(function()
                     if not _autoRejoinActive then return end
                     for i = 3, 1, -1 do
-                        Hub:Notify({Title = "Auto Rejoin", Message = "Rejoining in " .. i .. "s...", Duration = 1})
+                        Hub:Notify({Title="Auto Rejoin",Message="Rejoining in "..i.."s...",Duration=1})
                         task.wait(1)
                     end
                     pcall(function() TS:Teleport(game.PlaceId, LocalPlayer) end)
@@ -945,11 +1096,10 @@ UniUtil:NewToggle({
 })
 UniUtil:NewSeparator()
 UniUtil:NewToggle({
-    Title = "Fullbright",
-    Default = false,
+    Title = "Fullbright", Default = false,
     Callback = function(v)
         if v then
-            _origBright = Lighting.Brightness
+            _origBright  = Lighting.Brightness
             _origAmbient = Lighting.Ambient
             _origOutdoor = Lighting.OutdoorAmbient
             Lighting.Brightness = 2
@@ -963,18 +1113,16 @@ UniUtil:NewToggle({
     end,
 })
 UniUtil:NewToggle({
-    Title = "No Fog",
-    Default = false,
+    Title = "No Fog", Default = false,
     Callback = function(v)
         if v then
-            _origFogEnd = Lighting.FogEnd
+            _origFogEnd   = Lighting.FogEnd
             _origFogStart = Lighting.FogStart
-            Lighting.FogEnd = 1e9
-            Lighting.FogStart = 1e9
+            Lighting.FogEnd = 1e9; Lighting.FogStart = 1e9
             local atm = Lighting:FindFirstChildOfClass("Atmosphere")
             if atm then _origAtmDensity = atm.Density; atm.Density = 0 end
         else
-            Lighting.FogEnd = _origFogEnd or 1000
+            Lighting.FogEnd   = _origFogEnd   or 1000
             Lighting.FogStart = _origFogStart or 0
             local atm = Lighting:FindFirstChildOfClass("Atmosphere")
             if atm then atm.Density = _origAtmDensity or 0.395 end
@@ -983,57 +1131,54 @@ UniUtil:NewToggle({
 })
 UniUtil:NewSeparator()
 UniUtil:NewSlider({
-    Title = "FOV",
-    Min = 50,
-    Max = 120,
-    Default = 70,
+    Title = "FOV", Min = 50, Max = 120, Default = 70,
     Callback = function(v) workspace.CurrentCamera.FieldOfView = v end
 })
 UniUtil:NewSlider({
-    Title = "Time of Day",
-    Min = 0,
-    Max = 24,
-    Default = 14,
+    Title = "Time of Day", Min = 0, Max = 24, Default = 14,
     Callback = function(v) Lighting.ClockTime = v end
 })
 
--- Settings Tab
-local SetTab = Hub:NewTab({Title = "Settings", Icon = "rbxassetid://3926307641"})
-local AppearSec = SetTab:NewSection({Position = "Left", Title = "Appearance"})
-local DataSec = SetTab:NewSection({Position = "Right", Title = "Config"})
+-- ════════════════════════════════════════════════════════════════════════════════
+-- ──  SETTINGS TAB
+-- ════════════════════════════════════════════════════════════════════════════════
+local SetTab    = Hub:NewTab({Title = "Settings", Icon = "rbxassetid://3926307641"})
+local AppearSec = SetTab:NewSection({Position = "Left",  Title = "Appearance"})
+local DataSec   = SetTab:NewSection({Position = "Right", Title = "Config"})
 
 AppearSec:NewColorPicker({
-    Title = "Accent Color",
-    Default = Color3.fromRGB(110, 75, 255),
+    Title = "Accent Color", Default = Color3.fromRGB(110, 75, 255),
     Callback = function(c) Hub:SetAccent(c) end
 })
 AppearSec:NewSlider({
-    Title = "Window Opacity %",
-    Min = 30,
-    Max = 100,
-    Default = 95,
+    Title = "Window Opacity %", Min = 30, Max = 100, Default = 95,
     Callback = function(v) Hub._win.BackgroundTransparency = 1 - (v / 100) end
 })
 
 DataSec:NewButton({
     Title = "Save Config",
-    Callback = function() SM:Save(); Hub:Notify({Title = "Config", Message = "Saved", Duration = 2}) end
+    Callback = function() SM:Save(); Hub:Notify({Title="Config",Message="Saved",Duration=2}) end
 })
 DataSec:NewButton({
     Title = "Load Config",
-    Callback = function() SM:Load(); Hub:Notify({Title = "Config", Message = "Loaded", Duration = 2}) end
+    Callback = function() SM:Load(); Hub:Notify({Title="Config",Message="Loaded",Duration=2}) end
 })
+-- FIX #5: removed duplicate Hub:AutoSave — SM is the single save system
 DataSec:NewToggle({
-    Title = "Auto Save",
-    Default = true,
+    Title = "Auto Save (60s)", Default = true,
     Callback = function(v)
-        if v then Hub:AutoSave("phantom", Hub._autoSaveInterval or 60)
-        else if Hub._autoSaveThread then task.cancel(Hub._autoSaveThread); Hub._autoSaveThread = nil end end
+        if v then
+            task.spawn(function()
+                while task.wait(60) do
+                    if not v then break end
+                    SM:Save()
+                end
+            end)
+        end
     end
 })
 
 SetTab._btn.Visible = false
-Hub:AutoSave("phantom", 60)
 
 -- ════════════════════════════════════════════════════════════════════════════════
 -- ──  PANIC KEY WIRING
@@ -1058,11 +1203,11 @@ _panicShutdown = function()
         if _autoRejoinConn then _autoRejoinConn:Disconnect(); _autoRejoinConn = nil end
     end)
     pcall(function()
-        Lighting.Brightness = _origBright or 1
-        Lighting.Ambient = _origAmbient or Color3.fromRGB(127, 127, 127)
-        Lighting.OutdoorAmbient = _origOutdoor or Color3.fromRGB(127, 127, 127)
-        Lighting.FogEnd = _origFogEnd or 1000
-        Lighting.FogStart = _origFogStart or 0
+        Lighting.Brightness     = _origBright  or 1
+        Lighting.Ambient        = _origAmbient or Color3.fromRGB(127,127,127)
+        Lighting.OutdoorAmbient = _origOutdoor or Color3.fromRGB(127,127,127)
+        Lighting.FogEnd         = _origFogEnd   or 1000
+        Lighting.FogStart       = _origFogStart or 0
         local atm = Lighting:FindFirstChildOfClass("Atmosphere")
         if atm then atm.Density = _origAtmDensity or 0.395 end
     end)
@@ -1077,33 +1222,26 @@ end
 -- ──  PUBLIC API
 -- ════════════════════════════════════════════════════════════════════════════════
 _G.PhantomHub = {
-    Hub = Hub,
-    Phantom = Phantom,
-    Players = Players,
+    Hub        = Hub,
+    Phantom    = Phantom,
+    Players    = Players,
     RunService = RunService,
-    UIS = UIS,
-    LocalPlayer = LocalPlayer,
-    PlaceId = game.PlaceId,
-    getChar = getChar,
-    getHum = getHum,
-    getHRP = getHRP,
-    startAimbot = _startAimbot,
+    UIS        = UIS,
+    LocalPlayer= LocalPlayer,
+    PlaceId    = game.PlaceId,
+    getChar    = getChar,
+    getHum     = getHum,
+    getHRP     = getHRP,
+    startAimbot= _startAimbot,
     stopAimbot = _stopAimbot,
-    enableESP = enableESP,
-    clearESP = clearESP,
-    Await = function(self) return self end,
+    enableESP  = enableESP,
+    clearESP   = clearESP,
+    Await      = function(self) return self end,
 }
 
--- ── Startup Notification ──────────────────────────────────────
+-- ── Startup Notification ──────────────────────────────────────────────────────
 Hub:Notify({
-    Title = "Phantom v3.0 FINAL",
-    Message = "J=menu | RightAlt=aimbot | Del=PANIC | FOV/Prediction adjustable",
+    Title   = "Phantom v3.1",
+    Message = "J=menu | Aimbot key configurable in UI | Del=PANIC",
     Duration = 6,
 })
-
-print("[Phantom] FINAL version loaded!")
-print("[Phantom] ✅ Best Aimbot (Dex5 + Dex6)")
-print("[Phantom] ✅ Your ESP")
-print("[Phantom] ✅ Teleport/Server Hop/Auto Rejoin")
-print("[Phantom] ✅ Working Noclip")
-print("[Phantom] Press J to open menu")
