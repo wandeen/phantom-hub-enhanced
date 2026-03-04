@@ -1,5 +1,5 @@
 -- ╔════════════════════════════════════════════════════════════════════════════════╗
--- ║         PHANTOM HUB ENHANCED - v3.4                                          ║
+-- ║         PHANTOM HUB ENHANCED - v3.5                                          ║
 -- ║  ✅ Improved aimbot (smooth, wall-check, bone target, team filter, lock)      ║
 -- ║  ✅ Upgraded ESP (health/dist/lookline, survives death+rejoin)                ║
 -- ║  ✅ Teleport + Server Hop + Auto Rejoin (restored)                           ║
@@ -223,258 +223,13 @@ local function stopWsEnforcer()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  NO RECOIL
+-- ──  AIMBOT  (Heartbeat assist · bone targeting · wall check · sticky lock)
 -- ─────────────────────────────────────────────────────────────────────────────
---  Every RenderStepped we compare how much the camera pitch changed vs how much
---  the mouse moved vertically. The difference is recoil (unintended upward tilt).
---  We cancel it by immediately applying the inverse rotation that same frame.
---
---  Sensitivity is NOT hardcoded — we auto-calibrate it over the first 40 frames
---  of real mouse movement, learning the game's exact radians-per-pixel ratio.
---  "Reset Calibration" button wipes it so it re-learns (e.g. after sens change).
---
---  _noRecoilStrength (0–1) lets you dial in partial cancel if full cancel looks
---  visually obvious in a particular game.
--- ════════════════════════════════════════════════════════════════════════════════
-local _noRecoilEnabled  = false
-local _noRecoilStrength = 1.0
-local _noRecoilConn     = nil
-local _nrLastCF         = nil
-local _NR_CALIB_FRAMES  = 40
-local _nrCalibSamples   = {}
-local _nrCalibrated     = false
-local _nrSensitivity    = 0.0055  -- fallback radians/pixel (mid Roblox sensitivity)
-
-local function _nrReset()
-    _nrLastCF      = nil
-    _nrCalibSamples= {}
-    _nrCalibrated  = false
-end
-
-local _PHANTOM_NR_STEP = "PhantomNoRecoil"
-
-local function _startNoRecoil()
-    pcall(function() RunService:UnbindFromRenderStep(_PHANTOM_NR_STEP) end)
-    _nrReset()
-
-    -- Run at Camera+1: we see the FULLY updated cam.CFrame after Roblox's own
-    -- camera module has applied mouse movement AND any game-applied recoil.
-    -- This means pitchDelta correctly captures all upward movement this frame.
-    RunService:BindToRenderStep(_PHANTOM_NR_STEP, Enum.RenderPriority.Camera.Value + 1, function()
-        if not _noRecoilEnabled then _nrLastCF = nil; return end
-
-        local cam        = workspace.CurrentCamera
-        local mouseDelta = UIS:GetMouseDelta()
-
-        -- Bootstrap: record baseline on first active frame
-        if not _nrLastCF then _nrLastCF = cam.CFrame; return end
-
-        local lastPitch  = select(1, _nrLastCF:ToEulerAnglesYXZ())
-        local curPitch   = select(1, cam.CFrame:ToEulerAnglesYXZ())
-        local pitchDelta = curPitch - lastPitch  -- positive = camera tilted upward
-
-        -- ── sensitivity auto-calibration ─────────────────────────────────────
-        -- Sample frames where intentional mouse movement is large enough to
-        -- distinguish from noise, and there's a measurable camera response.
-        if not _nrCalibrated
-            and math.abs(mouseDelta.Y) > 2
-            and math.abs(pitchDelta)   > 0.00005 then
-            local ratio = math.abs(pitchDelta) / math.abs(mouseDelta.Y)
-            -- Sanity-clamp: ignore obviously wrong samples (e.g. from snaps)
-            if ratio > 0.0001 and ratio < 0.05 then
-                table.insert(_nrCalibSamples, ratio)
-                if #_nrCalibSamples >= _NR_CALIB_FRAMES then
-                    local sum = 0
-                    for _, v in ipairs(_nrCalibSamples) do sum = sum + v end
-                    _nrSensitivity = sum / #_nrCalibSamples
-                    _nrCalibrated  = true
-                    Hub:Notify({Title="No Recoil", Message="Calibrated ✓ (sens="..string.format("%.5f", _nrSensitivity)..")", Duration=3})
-                end
-            end
-        end
-
-        -- ── recoil cancel ────────────────────────────────────────────────────
-        -- Expected camera pitch change purely from the mouse this frame
-        local expectedPitch = -mouseDelta.Y * _nrSensitivity
-        -- Any upward pitch beyond what the mouse caused = recoil
-        local recoilPitch   = pitchDelta - expectedPitch
-
-        -- Only cancel upward surprise (positive = up in Roblox pitch convention)
-        -- Use a small deadband (0.0001 rad ≈ 0.006°) to ignore floating-point noise
-        if recoilPitch > 0.0001 then
-            local cancel = -recoilPitch * _noRecoilStrength
-            cam.CFrame = cam.CFrame * CFrame.Angles(cancel, 0, 0)
-        end
-
-        -- Record corrected CFrame as baseline for next frame
-        _nrLastCF = cam.CFrame
-    end)
-end
-
-local function _stopNoRecoil()
-    _noRecoilEnabled = false
-    pcall(function() RunService:UnbindFromRenderStep(_PHANTOM_NR_STEP) end)
-    _nrReset()
-end
-
--- ════════════════════════════════════════════════════════════════════════════════
--- ──  NO SPREAD
--- ─────────────────────────────────────────────────────────────────────────────
---  Spread is usually applied client-side: a random offset is added to the camera
---  look vector before it is passed to RemoteEvent:FireServer / InvokeServer.
---
---  We hook __namecall so every FireServer / InvokeServer passes through us first.
---  Any Vector3 argument with magnitude ≈ 1 (a unit direction vector) is replaced
---  with the camera's exact look vector, stripping the random offset before it
---  ever reaches the server.
---
---  We also hook workspace:Raycast for games that perform local hitscan without
---  sending a direction remote, straightening the ray.
---
---  Requires executor globals: getrawmetatable, setreadonly, newcclosure,
---  getnamecallmethod  (standard in Synapse X, KRNL, Fluxus, etc.).
---  If these aren't available the hook fails silently with a notification.
--- ════════════════════════════════════════════════════════════════════════════════
-local _noSpreadEnabled = false
-local _nsHooked        = false
-local _nsOrigNamecall  = nil
-local _nsOrigWsNc      = nil
-local _NS_MAG_TOL      = 0.08   -- tolerance for |magnitude - 1|
-local _NS_MAX_SWAP     = 3      -- max Vector3 args to replace per call (safety cap)
-
-local function _hookNoSpread()
-    if _nsHooked then return true end
-
-    -- ── FireServer / InvokeServer via game __namecall ────────────────────────
-    local hookOk = pcall(function()
-        local mt = getrawmetatable(game)
-        _nsOrigNamecall = mt.__namecall
-        setreadonly(mt, false)
-
-        mt.__namecall = newcclosure(function(self, ...)
-            if _noSpreadEnabled or (_abEnabled and _abSilent and _saLocked) then
-                local method = getnamecallmethod()
-                local isSilent = _abEnabled and _abSilent and _saLocked
-                if ((isSilent or _noSpreadEnabled) and
-                   ((method == "FireServer"   and self:IsA("RemoteEvent")) or
-                    (method == "InvokeServer" and self:IsA("RemoteFunction")))) then
-
-                    local args    = {...}
-                    -- Silent aim overrides no-spread: use vector toward locked target
-                    -- No-spread alone: use exact camera look vector
-                    local replaceDir
-                    if _abEnabled and _abSilent and _saLocked then
-                        local cam   = workspace.CurrentCamera
-                        replaceDir  = (_saLocked - cam.CFrame.Position).Unit
-                    elseif _noSpreadEnabled then
-                        replaceDir  = workspace.CurrentCamera.CFrame.LookVector
-                    end
-                    local swapped = 0
-
-                    if replaceDir then
-                        for i, v in ipairs(args) do
-                            if swapped >= _NS_MAX_SWAP then break end
-                            if typeof(v) == "Vector3" and v.Magnitude > 0.1 then
-                                if math.abs(v.Magnitude - 1) < _NS_MAG_TOL then
-                                    args[i]  = replaceDir
-                                    swapped  = swapped + 1
-                                end
-                            end
-                        end
-                    end
-
-                    return _nsOrigNamecall(self, table.unpack(args))
-                end
-            end
-            return _nsOrigNamecall(self, ...)
-        end)
-
-        setreadonly(mt, true)
-    end)
-
-    -- ── workspace ray hooks (Raycast + FindPartOnRay legacy APIs) ──────────────
-    pcall(function()
-        local wsmt   = getrawmetatable(workspace)
-        local gamemt = getrawmetatable(game)
-        if wsmt == gamemt then return end  -- shared mt already handled above
-
-        _nsOrigWsNc = wsmt.__namecall
-        setreadonly(wsmt, false)
-
-        wsmt.__namecall = newcclosure(function(self, ...)
-            local shouldFix = _noSpreadEnabled or (_abEnabled and _abSilent and _saLocked)
-            if shouldFix then
-                local method = getnamecallmethod()
-                local args   = {...}
-
-                -- Determine replacement direction
-                local replDir
-                if _abEnabled and _abSilent and _saLocked then
-                    replDir = (_saLocked - workspace.CurrentCamera.CFrame.Position).Unit
-                else
-                    replDir = workspace.CurrentCamera.CFrame.LookVector
-                end
-
-                -- workspace:Raycast(origin:V3, direction:V3, params?)
-                if method == "Raycast" then
-                    if args[2] and typeof(args[2]) == "Vector3" and args[2].Magnitude > 0.1 then
-                        args[2] = replDir * args[2].Magnitude
-                    end
-                    return _nsOrigWsNc(self, table.unpack(args))
-
-                -- workspace:FindPartOnRay(ray, blacklist?, waterTrans?, ignoreWater?)
-                elseif method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList" then
-                    if args[1] and typeof(args[1]) == "Ray" then
-                        -- Rebuild the Ray with the corrected direction
-                        local orig = args[1]
-                        args[1] = Ray.new(orig.Origin, replDir * orig.Direction.Magnitude)
-                    end
-                    return _nsOrigWsNc(self, table.unpack(args))
-                end
-            end
-            return _nsOrigWsNc(self, ...)
-        end)
-
-        setreadonly(wsmt, true)
-    end)
-
-    if hookOk then _nsHooked = true end
-    return hookOk
-end
-
-local function _unhookNoSpread()
-    if not _nsHooked then return end
-    pcall(function()
-        local mt = getrawmetatable(game)
-        setreadonly(mt, false)
-        mt.__namecall = _nsOrigNamecall
-        setreadonly(mt, true)
-    end)
-    pcall(function()
-        local wsmt = getrawmetatable(workspace)
-        if wsmt ~= getrawmetatable(game) and _nsOrigWsNc then
-            setreadonly(wsmt, false)
-            wsmt.__namecall = _nsOrigWsNc
-            setreadonly(wsmt, true)
-        end
-    end)
-    _nsHooked = false
-end
-
-
--- ════════════════════════════════════════════════════════════════════════════════
--- ──  AIMBOT  (smoothed, wall-checked, bone-selectable, team-filtered, sticky lock)
--- ─────────────────────────────────────────────────────────────────────────────
---  Improvements over original:
---    • Bone targeting  — aim at Head, Neck, or HRP (configurable)
---    • Wall check      — raycast from camera; skip targets behind geometry
---    • Team filter     — never aims at teammates
---    • Smoothing       — lerp toward target each frame instead of snapping
---    • Target lock     — once a target is acquired stay on them; only switch
---                        if they die, leave FOV, or a wall blocks them
---                        (prevents jitter when two enemies are close to center)
---    • Silent aim      — camera never moves; only outgoing FireServer direction
---                        vectors are redirected (uses same __namecall hook)
+--  • Bone targeting  — Head / Neck / HRP (configurable)
+--  • Wall check      — raycast; skip targets behind geometry
+--  • Team filter     — never aims at teammates
+--  • Smoothing       — Heartbeat lerp so mouse input is never blocked
+--  • Target lock     — stays on acquired target until they die / hide behind wall
 -- ════════════════════════════════════════════════════════════════════════════════
 local _abEnabled    = false
 local _abMode       = "Toggle"
@@ -488,10 +243,6 @@ local _abWallCheck  = true
 local _abTeamCheck  = true
 local _abConn       = nil
 local _abTarget     = nil     -- {part=BasePart, player=Player}  or  nil
-local _abSilent     = false
-
--- Silent aim state (shared with __namecall hook below)
-local _saLocked     = nil     -- predicted world position to redirect shots to
 
 -- ── helpers ───────────────────────────────────────────────────────────────────
 local function _abGetBonePart(char)
@@ -597,11 +348,8 @@ local function _abGetPredicted(target)
 end
 
 local function _runAimbot()
-    -- ── target lock maintenance ───────────────────────────────────────────────
-    --  We only drop the lock when the target is truly gone (dead, left the game,
-    --  behind a wall).  We do NOT drop on screen-distance so that mouse movement
-    --  never breaks the lock — BindToRenderStep at Camera+1 overwrites the camera
-    --  after the game's own camera module, so we always get the final say.
+    -- ── target lock maintenance ─────────────────────────────────────────────────
+    --  Only drop lock when target is truly gone (dead / left / behind wall).
     local keepLock = false
     if _abTarget then
         local plr  = _abTarget.player
@@ -620,17 +368,11 @@ local function _runAimbot()
         _abTarget = _abFindBestTarget()
     end
 
-    if not _abTarget then _saLocked = nil; return end
+    if not _abTarget then return end
 
     -- ── predicted world position ─────────────────────────────────────────────
     local predicted = _abGetPredicted(_abTarget)
-    if not predicted then _abTarget = nil; _saLocked = nil; return end
-
-    -- Always update silent aim position regardless of mode
-    _saLocked = predicted
-
-    -- ── silent aim: don't move camera ────────────────────────────────────────
-    if _abSilent then return end
+    if not predicted then _abTarget = nil; return end
 
     -- ── normal aim: rotate camera toward target with smoothing ───────────────
     local cam     = workspace.CurrentCamera
@@ -670,90 +412,42 @@ local function _updateFovCircle()
         local cam = workspace.CurrentCamera
         _fovCircle.Position = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
         _fovCircle.Radius   = _abFov
-        _fovCircle.Visible  = _abEnabled and not _abSilent  -- hide in silent mode (no visual giveaway)
+        _fovCircle.Visible  = _abEnabled
     end)
 end
 
 _createFovCircle()  -- create on script load (Drawing is always available in exploits)
 
--- ── Aimbot loop ───────────────────────────────────────────────────────────────
---  CRITICAL: use BindToRenderStep at Camera+1 priority so we run AFTER the
---  Roblox camera module applies mouse movement. This gives us the final word
---  on cam.CFrame every frame, which is why mouse movement used to break lock.
-local _PHANTOM_AB_STEP = "PhantomAimbot"
+-- ── Aimbot loop ─────────────────────────────────────────────────────────────
+local _abConn = nil   -- Heartbeat connection for aimbot assist loop
+local _fovConn = nil  -- separate RenderStepped for the FOV circle (visual only)
 
 local function _startAimbot()
-    pcall(function() RunService:UnbindFromRenderStep(_PHANTOM_AB_STEP) end)
-    RunService:BindToRenderStep(_PHANTOM_AB_STEP, Enum.RenderPriority.Camera.Value + 1, function()
-        _updateFovCircle()
-        if not _abEnabled then _abTarget = nil; _saLocked = nil; return end
+    -- FOV circle: update every render frame (pure visual, no cam manipulation)
+    if _fovConn then _fovConn:Disconnect() end
+    _fovConn = RunService.RenderStepped:Connect(_updateFovCircle)
+
+    -- Aimbot assist: runs on Heartbeat so it DOES NOT override mouse input.
+    -- Roblox's camera module processes mouse on RenderStepped AFTER Heartbeat,
+    -- which means: aimbot nudges camera → mouse adds its delta on top.
+    -- Net result: you can move freely, aimbot just pulls you toward target.
+    if _abConn then _abConn:Disconnect() end
+    _abConn = RunService.Heartbeat:Connect(function()
+        if not _abEnabled then _abTarget = nil; return end
         if _abMode == "Hold" and not UIS:IsKeyDown(_abKey) then
-            _abTarget = nil; _saLocked = nil; return
+            _abTarget = nil; return
         end
-        if UIS:GetFocusedTextBox() then _abTarget = nil; _saLocked = nil; return end
+        if UIS:GetFocusedTextBox() then _abTarget = nil; return end
         _runAimbot()
     end)
 end
 
 local function _stopAimbot()
     _abEnabled = false
-    pcall(function() RunService:UnbindFromRenderStep(_PHANTOM_AB_STEP) end)
-    if _abConn then _abConn:Disconnect(); _abConn = nil end
-    _abTarget  = nil
-    _saLocked  = nil
+    if _abConn  then _abConn:Disconnect();  _abConn  = nil end
+    if _fovConn then _fovConn:Disconnect(); _fovConn = nil end
+    _abTarget = nil
     _destroyFovCircle()
-end
-
--- ── Silent aim: camera-swap on click ─────────────────────────────────────────
---  This is the reliable universal approach.  When the player fires (Mouse1Down),
---  we briefly rotate cam.CFrame toward the locked target for exactly that frame.
---  The game's weapon code reads cam.CFrame.LookVector and gets our redirected
---  direction.  Next frame we restore.  Works for any game that reads the camera
---  rather than sending a client-computed direction to the server.
---
---  The __namecall hook (for FireServer direction args) remains active as a
---  second layer for games that DO send direction vectors to the server.
-local _saStoredCF     = nil
-local _saSwapActive   = false
-local _saClickConn    = nil
-local _saRestoreConn  = nil
-
-local function _startSilentAimClick()
-    if _saClickConn then _saClickConn:Disconnect() end
-    if _saRestoreConn then _saRestoreConn:Disconnect() end
-
-    _saClickConn = UIS.InputBegan:Connect(function(input, gp)
-        if gp then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-        if not _abEnabled or not _abSilent or not _saLocked then return end
-
-        local cam = workspace.CurrentCamera
-        _saStoredCF   = cam.CFrame
-        _saSwapActive = true
-        -- Point camera at predicted target position
-        cam.CFrame = CFrame.new(cam.CFrame.Position, _saLocked)
-    end)
-
-    -- Restore on the very next rendered frame (InputEnded fires after game processes click)
-    _saRestoreConn = UIS.InputEnded:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-        if not _saSwapActive then return end
-        _saSwapActive = false
-        if _saStoredCF then
-            workspace.CurrentCamera.CFrame = _saStoredCF
-            _saStoredCF = nil
-        end
-    end)
-end
-
-local function _stopSilentAimClick()
-    if _saClickConn   then _saClickConn:Disconnect();   _saClickConn   = nil end
-    if _saRestoreConn then _saRestoreConn:Disconnect(); _saRestoreConn = nil end
-    -- Restore camera if we're mid-swap
-    if _saSwapActive and _saStoredCF then
-        pcall(function() workspace.CurrentCamera.CFrame = _saStoredCF end)
-    end
-    _saSwapActive = false; _saStoredCF = nil
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
@@ -1390,29 +1084,7 @@ UniCombat:NewToggle({
     Default = true,
     Callback = function(v) _abTeamCheck = v end
 })
-UniCombat:NewSeparator()
-UniCombat:NewToggle({
-    Title = "Silent Aim",
-    Default = false,
-    Callback = function(v)
-        _abSilent = v
-        if v then
-            -- Layer 1: camera-swap on click (universal, works in all games)
-            _startSilentAimClick()
-            -- Layer 2: __namecall hook (extra layer for games that send direction to server)
-            pcall(_hookNoSpread)
-            -- Hide FOV circle in silent mode (don't reveal to spectators)
-            if _fovCircle then pcall(function() _fovCircle.Visible = false end) end
-            Hub:Notify({Title="Silent Aim", Message="ON — dual-layer (camera-swap + remote hook)", Duration=4})
-        else
-            _stopSilentAimClick()
-            if _fovCircle and _abEnabled then
-                pcall(function() _fovCircle.Visible = true end)
-            end
-            Hub:Notify({Title="Silent Aim", Message="OFF", Duration=2})
-        end
-    end,
-})
+
 UniCombat:NewToggle({
     Title = "Triggerbot",
     Default = false,
@@ -1425,53 +1097,7 @@ UniCombat:NewSlider({
     Default = 80,
     Callback = function(v) _tbDelay = v end
 })
-UniCombat:NewSeparator()
--- ── No Recoil ──────────────────────────────────────────────────────────────
-UniCombat:NewToggle({
-    Title = "No Recoil",
-    Default = false,
-    Callback = function(v)
-        _noRecoilEnabled = v
-        if v then
-            _startNoRecoil()
-            Hub:Notify({Title="No Recoil", Message="ON — move your mouse to auto-calibrate sensitivity", Duration=5})
-        else
-            _stopNoRecoil()
-        end
-    end,
-})
-UniCombat:NewSlider({
-    Title = "Recoil Cancel %",
-    Min = 0, Max = 100, Default = 100,
-    Callback = function(v) _noRecoilStrength = v / 100 end,
-})
-UniCombat:NewButton({
-    Title = "Reset Recoil Calibration",
-    Callback = function()
-        _nrReset()
-        Hub:Notify({Title="No Recoil", Message="Calibration cleared — move mouse to re-learn", Duration=3})
-    end,
-})
-UniCombat:NewSeparator()
--- ── No Spread ──────────────────────────────────────────────────────────────
-UniCombat:NewToggle({
-    Title = "No Spread",
-    Default = false,
-    Callback = function(v)
-        _noSpreadEnabled = v
-        if v then
-            local ok = _hookNoSpread()
-            if ok and _nsHooked then
-                Hub:Notify({Title="No Spread", Message="ON — FireServer direction vectors normalised", Duration=4})
-            else
-                _noSpreadEnabled = false
-                Hub:Notify({Title="No Spread", Message="Hook failed — executor may not support getrawmetatable", Duration=5})
-            end
-        else
-            Hub:Notify({Title="No Spread", Message="OFF", Duration=2})
-        end
-    end,
-})
+
 
 -- Visuals Section
 local UniVis = UniTab:NewSection({Position = "Right", Title = "Visuals"})
@@ -1914,11 +1540,7 @@ _panicShutdown = function()
     pcall(_disableNoclip)
     pcall(clearESP)
     pcall(_stopAimbot)
-    pcall(function() _abSilent = false; _saLocked = nil end)
-    pcall(_stopSilentAimClick)
     pcall(_stopTrigger)
-    pcall(_stopNoRecoil)
-    pcall(_unhookNoSpread)
     pcall(function()
         if _infJumpConn then _infJumpConn:Disconnect(); _infJumpConn = nil end
     end)
@@ -1966,23 +1588,18 @@ _G.PhantomHub = {
     enableESP = enableESP,
     clearESP = clearESP,
     Await = function(self) return self end,
-    startNoRecoil  = _startNoRecoil,
-    stopNoRecoil   = _stopNoRecoil,
-    hookNoSpread   = _hookNoSpread,
-    unhookNoSpread = _unhookNoSpread,
 }
 
 -- ── Startup Notification ──────────────────────────────────────
 Hub:Notify({
-    Title = "Phantom v3.4",
-    Message = "J=menu  |  Del=PANIC  |  FOV circle · Lock fix · Recoil fix · Silent Aim · Autoexec",
+    Title = "Phantom v3.5",
+    Message = "J=menu  |  Del=PANIC  |  Aimbot: smooth assist, target lock, FOV circle, autoexec",
     Duration = 6,
 })
 
-print("[Phantom] v3.4 loaded!")
+print("[Phantom] v3.5 loaded!")
 print("[Phantom] ✅ Best Aimbot (Dex5 + Dex6)")
 print("[Phantom] ✅ Your ESP")
 print("[Phantom] ✅ Teleport/Server Hop/Auto Rejoin")
 print("[Phantom] ✅ Working Noclip")
 print("[Phantom] Press J to open menu")
-print("[Phantom] ✅ No Recoil + No Spread")
