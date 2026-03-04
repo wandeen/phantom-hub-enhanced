@@ -8,7 +8,7 @@
 -- ── CONFIGURATION - CHANGE THIS TO YOUR GITHUB USERNAME ────────
 -- ════════════════════════════════════════════════════════════════
 
-local GITHUB_USERNAME = "YOUR_USERNAME"  -- ← CHANGE THIS!
+local GITHUB_USERNAME = "wandeen"  
 local GITHUB_REPO = "phantom-hub-enhanced"
 local GITHUB_BRANCH = "main"
 
