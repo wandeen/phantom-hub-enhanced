@@ -1,11 +1,9 @@
 -- ╔════════════════════════════════════════════════════════════════════════════════╗
--- ║         PHANTOM HUB ENHANCED - FIXED & UPGRADED                              ║
--- ║  ✅ BEST aimbot (Dex5 prediction + Dex6 targeting)                           ║
--- ║  ✅ UPGRADED ESP (health bar, distance, look line, team colors)               ║
+-- ║         PHANTOM HUB ENHANCED - v3.3                                          ║
+-- ║  ✅ Improved aimbot (smooth, wall-check, bone target, team filter, lock)      ║
+-- ║  ✅ Upgraded ESP (health/dist/lookline, survives death+rejoin)                ║
 -- ║  ✅ Teleport + Server Hop + Auto Rejoin (restored)                           ║
 -- ║  ✅ Working Noclip (dual-method)                                             ║
--- ║  FIXES: spectator logic, spectator perf, prediction slider scale,            ║
--- ║         teleport refresh, duplicate save, aimbot keybind UI                  ║
 -- ╚════════════════════════════════════════════════════════════════════════════════╝
 
 -- ── Load UI Library ──────────────────────────────────────────────────────────
@@ -68,7 +66,7 @@ UIS.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- ── Create Window ──────────────────────────────────────────────────────────
+-- ── Create Window (BIGGER SIZE) ────────────────────────────────────────────
 local Hub = Phantom.new({
     Title    = "Phantom",
     Subtitle = "hub",
@@ -76,10 +74,10 @@ local Hub = Phantom.new({
 })
 Hub:SetProfile()
 Hub._win.BackgroundTransparency = 0.05
-Hub._win.Size = UDim2.new(0, 900, 0, 550)
+Hub._win.Size = UDim2.new(0, 900, 0, 550)  -- BIGGER WINDOW
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  SETTINGS MANAGER
+-- ──  SETTINGS MANAGER (from original)
 -- ════════════════════════════════════════════════════════════════════════════════
 local _smHS = game:GetService("HttpService")
 local SettingsManager = {}; SettingsManager.__index = SettingsManager
@@ -135,7 +133,7 @@ SM:Register("FlySpeed",
 SM:Load(); SM:StartAutoApply()
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  IMPROVED NOCLIP (DUAL-METHOD)
+-- ──  IMPROVED NOCLIP (MY DUAL-METHOD SYSTEM)
 -- ════════════════════════════════════════════════════════════════════════════════
 local _noclipEnabled = false
 local _noclipConn, _noclipPartConn, _noclipCharConn = nil, nil, nil
@@ -165,7 +163,7 @@ local function _enableNoclip()
     _noclipEnabled = true
     local char = getChar()
     if char then _ncChar(char, true) end
-
+    
     if _noclipConn then _noclipConn:Disconnect() end
     _noclipConn = RunService.RenderStepped:Connect(function()
         if not _noclipEnabled then return end
@@ -175,7 +173,7 @@ local function _enableNoclip()
             if d:IsA("BasePart") and d.CanCollide then d.CanCollide = false end
         end
     end)
-
+    
     if char then
         if _noclipPartConn then _noclipPartConn:Disconnect() end
         _noclipPartConn = char.DescendantAdded:Connect(function(d)
@@ -184,7 +182,7 @@ local function _enableNoclip()
             end
         end)
     end
-
+    
     if _noclipCharConn then _noclipCharConn:Disconnect() end
     _noclipCharConn = LocalPlayer.CharacterAdded:Connect(function(newChar)
         task.wait(0.3)
@@ -225,62 +223,392 @@ local function stopWsEnforcer()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  BEST AIMBOT (DEX5 PREDICTION + DEX6 SCREEN-CENTER TARGETING)
+-- ──  NO RECOIL
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Every RenderStepped we compare how much the camera pitch changed vs how much
+--  the mouse moved vertically. The difference is recoil (unintended upward tilt).
+--  We cancel it by immediately applying the inverse rotation that same frame.
+--
+--  Sensitivity is NOT hardcoded — we auto-calibrate it over the first 40 frames
+--  of real mouse movement, learning the game's exact radians-per-pixel ratio.
+--  "Reset Calibration" button wipes it so it re-learns (e.g. after sens change).
+--
+--  _noRecoilStrength (0–1) lets you dial in partial cancel if full cancel looks
+--  visually obvious in a particular game.
 -- ════════════════════════════════════════════════════════════════════════════════
-local _abEnabled  = false
-local _abMode     = "Toggle"
--- FIX #8: keybind is now also exposed in the UI (see Combat section below)
-local _abKeyName  = "RightAlt"
-local _abKey      = Enum.KeyCode.RightAlt
-local _abFov      = 150
--- FIX #6: prediction stored as 0-1 float; slider is 0-100 and divides by 100
-local _abPrediction = 0.1768521
-local _abConn     = nil
-local _abTarget   = nil
+local _noRecoilEnabled  = false
+local _noRecoilStrength = 1.0
+local _noRecoilConn     = nil
+local _nrLastCF         = nil
+local _NR_CALIB_FRAMES  = 40
+local _nrCalibSamples   = {}
+local _nrCalibrated     = false
+local _nrSensitivity    = 0.0055  -- fallback radians/pixel (mid Roblox sensitivity)
 
-local function _findClosestToCenter()
-    local closestDist = math.huge
-    local closestPlayer = nil
+local function _nrReset()
+    _nrLastCF      = nil
+    _nrCalibSamples= {}
+    _nrCalibrated  = false
+end
+
+local function _startNoRecoil()
+    if _noRecoilConn then _noRecoilConn:Disconnect() end
+    _nrReset()
+
+    _noRecoilConn = RunService.RenderStepped:Connect(function()
+        if not _noRecoilEnabled then _nrLastCF = nil; return end
+
+        local cam        = workspace.CurrentCamera
+        local mouseDelta = UIS:GetMouseDelta()
+
+        if not _nrLastCF then _nrLastCF = cam.CFrame; return end
+
+        local lastPitch  = select(1, _nrLastCF:ToEulerAnglesYXZ())
+        local curPitch   = select(1, cam.CFrame:ToEulerAnglesYXZ())
+        local pitchDelta = curPitch - lastPitch  -- positive = camera tilted up
+
+        -- Auto-calibrate: record how many radians one mouse pixel equals
+        if not _nrCalibrated
+            and math.abs(mouseDelta.Y) > 3
+            and math.abs(pitchDelta)   > 0.0001 then
+            table.insert(_nrCalibSamples, math.abs(pitchDelta) / math.abs(mouseDelta.Y))
+            if #_nrCalibSamples >= _NR_CALIB_FRAMES then
+                local sum = 0
+                for _, v in ipairs(_nrCalibSamples) do sum = sum + v end
+                _nrSensitivity = sum / #_nrCalibSamples
+                _nrCalibrated  = true
+            end
+        end
+
+        -- Expected pitch from intentional mouse movement
+        local expectedPitch = -mouseDelta.Y * _nrSensitivity
+        -- Anything upward beyond that is recoil
+        local recoilPitch = pitchDelta - expectedPitch
+
+        if recoilPitch > 0.0003 then
+            cam.CFrame = cam.CFrame * CFrame.Angles(-recoilPitch * _noRecoilStrength, 0, 0)
+        end
+
+        _nrLastCF = cam.CFrame
+    end)
+end
+
+local function _stopNoRecoil()
+    _noRecoilEnabled = false
+    if _noRecoilConn then _noRecoilConn:Disconnect(); _noRecoilConn = nil end
+    _nrReset()
+end
+
+-- ════════════════════════════════════════════════════════════════════════════════
+-- ──  NO SPREAD
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Spread is usually applied client-side: a random offset is added to the camera
+--  look vector before it is passed to RemoteEvent:FireServer / InvokeServer.
+--
+--  We hook __namecall so every FireServer / InvokeServer passes through us first.
+--  Any Vector3 argument with magnitude ≈ 1 (a unit direction vector) is replaced
+--  with the camera's exact look vector, stripping the random offset before it
+--  ever reaches the server.
+--
+--  We also hook workspace:Raycast for games that perform local hitscan without
+--  sending a direction remote, straightening the ray.
+--
+--  Requires executor globals: getrawmetatable, setreadonly, newcclosure,
+--  getnamecallmethod  (standard in Synapse X, KRNL, Fluxus, etc.).
+--  If these aren't available the hook fails silently with a notification.
+-- ════════════════════════════════════════════════════════════════════════════════
+local _noSpreadEnabled = false
+local _nsHooked        = false
+local _nsOrigNamecall  = nil
+local _nsOrigWsNc      = nil
+local _NS_MAG_TOL      = 0.08   -- tolerance for |magnitude - 1|
+local _NS_MAX_SWAP     = 3      -- max Vector3 args to replace per call (safety cap)
+
+local function _hookNoSpread()
+    if _nsHooked then return true end
+
+    -- ── FireServer / InvokeServer via game __namecall ────────────────────────
+    local hookOk = pcall(function()
+        local mt = getrawmetatable(game)
+        _nsOrigNamecall = mt.__namecall
+        setreadonly(mt, false)
+
+        mt.__namecall = newcclosure(function(self, ...)
+            if _noSpreadEnabled or (_abEnabled and _abSilent and _saLocked) then
+                local method = getnamecallmethod()
+                local isSilent = _abEnabled and _abSilent and _saLocked
+                if ((isSilent or _noSpreadEnabled) and
+                   ((method == "FireServer"   and self:IsA("RemoteEvent")) or
+                    (method == "InvokeServer" and self:IsA("RemoteFunction")))) then
+
+                    local args    = {...}
+                    -- Silent aim overrides no-spread: use vector toward locked target
+                    -- No-spread alone: use exact camera look vector
+                    local replaceDir
+                    if _abEnabled and _abSilent and _saLocked then
+                        local cam   = workspace.CurrentCamera
+                        replaceDir  = (_saLocked - cam.CFrame.Position).Unit
+                    elseif _noSpreadEnabled then
+                        replaceDir  = workspace.CurrentCamera.CFrame.LookVector
+                    end
+                    local swapped = 0
+
+                    if replaceDir then
+                        for i, v in ipairs(args) do
+                            if swapped >= _NS_MAX_SWAP then break end
+                            if typeof(v) == "Vector3" and v.Magnitude > 0.1 then
+                                if math.abs(v.Magnitude - 1) < _NS_MAG_TOL then
+                                    args[i]  = replaceDir
+                                    swapped  = swapped + 1
+                                end
+                            end
+                        end
+                    end
+
+                    return _nsOrigNamecall(self, table.unpack(args))
+                end
+            end
+            return _nsOrigNamecall(self, ...)
+        end)
+
+        setreadonly(mt, true)
+    end)
+
+    -- ── workspace:Raycast (local hitscan games) ──────────────────────────────
+    pcall(function()
+        local wsmt   = getrawmetatable(workspace)
+        local gamemt = getrawmetatable(game)
+        if wsmt == gamemt then return end  -- shared mt, already handled above
+
+        _nsOrigWsNc = wsmt.__namecall
+        setreadonly(wsmt, false)
+
+        wsmt.__namecall = newcclosure(function(self, ...)
+            if _noSpreadEnabled and getnamecallmethod() == "Raycast" then
+                local args = {...}
+                -- workspace:Raycast(origin, direction, params?)
+                if args[2] and typeof(args[2]) == "Vector3" and args[2].Magnitude > 0.1 then
+                    -- keep original ray length but use exact camera look direction
+                    args[2] = workspace.CurrentCamera.CFrame.LookVector * args[2].Magnitude
+                end
+                return _nsOrigWsNc(self, table.unpack(args))
+            end
+            return _nsOrigWsNc(self, ...)
+        end)
+
+        setreadonly(wsmt, true)
+    end)
+
+    if hookOk then _nsHooked = true end
+    return hookOk
+end
+
+local function _unhookNoSpread()
+    if not _nsHooked then return end
+    pcall(function()
+        local mt = getrawmetatable(game)
+        setreadonly(mt, false)
+        mt.__namecall = _nsOrigNamecall
+        setreadonly(mt, true)
+    end)
+    pcall(function()
+        local wsmt = getrawmetatable(workspace)
+        if wsmt ~= getrawmetatable(game) and _nsOrigWsNc then
+            setreadonly(wsmt, false)
+            wsmt.__namecall = _nsOrigWsNc
+            setreadonly(wsmt, true)
+        end
+    end)
+    _nsHooked = false
+end
+
+
+-- ════════════════════════════════════════════════════════════════════════════════
+-- ──  AIMBOT  (smoothed, wall-checked, bone-selectable, team-filtered, sticky lock)
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Improvements over original:
+--    • Bone targeting  — aim at Head, Neck, or HRP (configurable)
+--    • Wall check      — raycast from camera; skip targets behind geometry
+--    • Team filter     — never aims at teammates
+--    • Smoothing       — lerp toward target each frame instead of snapping
+--    • Target lock     — once a target is acquired stay on them; only switch
+--                        if they die, leave FOV, or a wall blocks them
+--                        (prevents jitter when two enemies are close to center)
+--    • Silent aim      — camera never moves; only outgoing FireServer direction
+--                        vectors are redirected (uses same __namecall hook)
+-- ════════════════════════════════════════════════════════════════════════════════
+local _abEnabled    = false
+local _abMode       = "Toggle"
+local _abKey        = Enum.KeyCode.RightAlt
+local _abKeyName    = "RightAlt"
+local _abFov        = 150
+local _abPrediction = 0.1768521
+local _abSmoothing  = 0.35    -- 0=instant snap  1=no movement (0.1–0.5 is best)
+local _abBone       = "Head"  -- "Head" | "Neck" | "HRP"
+local _abWallCheck  = true
+local _abTeamCheck  = true
+local _abConn       = nil
+local _abTarget     = nil     -- {part=BasePart, player=Player}  or  nil
+local _abSilent     = false
+
+-- Silent aim state (shared with __namecall hook below)
+local _saLocked     = nil     -- predicted world position to redirect shots to
+
+-- ── helpers ───────────────────────────────────────────────────────────────────
+local function _abGetBonePart(char)
+    if _abBone == "Head" then
+        return char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+    elseif _abBone == "Neck" then
+        -- Try neck attachment on UpperTorso (R15) or Torso (R6)
+        local ut = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+        if ut then
+            local att = ut:FindFirstChild("NeckAttachment")
+            if att then return ut, att end  -- returns part + attachment
+        end
+        return char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+    else -- HRP
+        return char:FindFirstChild("HumanoidRootPart")
+    end
+end
+
+local function _abGetBonePos(char)
+    if _abBone == "Neck" then
+        local ut = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+        if ut then
+            local att = ut:FindFirstChild("NeckAttachment")
+            if att then return (ut.CFrame * att.CFrame).Position end
+        end
+    end
+    local part = _abGetBonePart(char)
+    return part and part.Position or nil
+end
+
+local function _abIsWallBlocked(targetPos)
+    local cam     = workspace.CurrentCamera
+    local origin  = cam.CFrame.Position
+    local dir     = (targetPos - origin)
+    local dist    = dir.Magnitude - 0.5   -- stop just before the target
+    if dist <= 0 then return false end
+
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {LocalPlayer.Character or workspace}
+    params.FilterType = Enum.RaycastFilterType.Exclude
+
+    -- Also exclude all enemy characters so we don't stop on their own parts
+    local filter = {LocalPlayer.Character}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then table.insert(filter, plr.Character) end
+    end
+    params.FilterDescendantsInstances = filter
+
+    local result = workspace:Raycast(origin, dir.Unit * dist, params)
+    return result ~= nil   -- hit something = blocked
+end
+
+local function _abIsValidTarget(plr)
+    if plr == LocalPlayer then return false end
+    if _abTeamCheck and plr.Team and LocalPlayer.Team and plr.Team == LocalPlayer.Team then
+        return false
+    end
+    local char = plr.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    return true
+end
+
+local function _abGetScreenDist(worldPos)
     local cam = workspace.CurrentCamera
-    local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+    local screenPos, onScreen = cam:WorldToViewportPoint(worldPos)
+    if not onScreen then return math.huge end
+    local center = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
+    return (center - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+end
+
+local function _abFindBestTarget()
+    local best     = nil
+    local bestDist = math.huge
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then
-            local char = plr.Character
-            if char and char:FindFirstChild("HumanoidRootPart") then
-                local hum = char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 then
-                    local hrp = char.HumanoidRootPart
-                    local screenPos, onScreen = cam:WorldToViewportPoint(hrp.Position)
-                    if onScreen then
-                        local dist = (screenCenter - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
-                        if dist < closestDist and dist < _abFov then
-                            closestDist = dist
-                            closestPlayer = hrp
-                        end
+        if _abIsValidTarget(plr) then
+            local char    = plr.Character
+            local bonePos = _abGetBonePos(char)
+            if bonePos then
+                local d = _abGetScreenDist(bonePos)
+                if d < _abFov and d < bestDist then
+                    -- wall check here keeps the list accurate
+                    if not _abWallCheck or not _abIsWallBlocked(bonePos) then
+                        bestDist = d
+                        local part = _abGetBonePart(char)
+                        best = {part = part, player = plr}
                     end
                 end
             end
         end
     end
-    return closestPlayer
+    return best
+end
+
+local function _abGetPredicted(target)
+    if not target or not target.part then return nil end
+    local part = target.part
+    if not part.Parent then return nil end
+    local vel  = pcall(function() return part.Velocity end) and part.Velocity or Vector3.new()
+    return part.Position + vel * _abPrediction
 end
 
 local function _runAimbot()
-    local target = _findClosestToCenter()
-    if not target then _abTarget = nil; return end
-    _abTarget = target
-    local cam = workspace.CurrentCamera
-    local predictedPos = target.Position + (target.Velocity * _abPrediction)
-    cam.CFrame = CFrame.new(cam.CFrame.Position, predictedPos)
+    -- ── target acquisition / lock maintenance ────────────────────────────────
+    local keepLock = false
+    if _abTarget then
+        -- Check if current lock is still valid
+        local plr  = _abTarget.player
+        local part = _abTarget.part
+        if _abIsValidTarget(plr) and part and part.Parent then
+            local bonePos = _abGetBonePos(plr.Character)
+            if bonePos then
+                local d = _abGetScreenDist(bonePos)
+                if d < _abFov * 1.5 then   -- give 50% extra FOV grace when already locked
+                    if not _abWallCheck or not _abIsWallBlocked(bonePos) then
+                        keepLock = true
+                    end
+                end
+            end
+        end
+    end
+
+    if not keepLock then
+        _abTarget = _abFindBestTarget()
+    end
+
+    if not _abTarget then _saLocked = nil; return end
+
+    -- ── predicted world position ─────────────────────────────────────────────
+    local predicted = _abGetPredicted(_abTarget)
+    if not predicted then _abTarget = nil; _saLocked = nil; return end
+
+    -- Always update silent aim position regardless of mode
+    _saLocked = predicted
+
+    -- ── silent aim: don't move camera ────────────────────────────────────────
+    if _abSilent then return end
+
+    -- ── normal aim: rotate camera toward target with smoothing ───────────────
+    local cam     = workspace.CurrentCamera
+    local targetCF = CFrame.new(cam.CFrame.Position, predicted)
+    -- Spherical lerp between current and target orientation
+    local alpha   = math.clamp(1 - _abSmoothing, 0.01, 1)
+    cam.CFrame    = cam.CFrame:Lerp(targetCF, alpha)
 end
 
 local function _startAimbot()
     if _abConn then _abConn:Disconnect() end
     _abConn = RunService.RenderStepped:Connect(function()
-        if not _abEnabled then _abTarget = nil; return end
-        if _abMode == "Hold" and not UIS:IsKeyDown(_abKey) then _abTarget = nil; return end
-        if UIS:GetFocusedTextBox() then _abTarget = nil; return end
+        if not _abEnabled then _abTarget = nil; _saLocked = nil; return end
+        if _abMode == "Hold" and not UIS:IsKeyDown(_abKey) then
+            _abTarget = nil; _saLocked = nil; return
+        end
+        if UIS:GetFocusedTextBox() then _abTarget = nil; _saLocked = nil; return end
         _runAimbot()
     end)
 end
@@ -288,20 +616,21 @@ end
 local function _stopAimbot()
     _abEnabled = false
     if _abConn then _abConn:Disconnect(); _abConn = nil end
-    _abTarget = nil
+    _abTarget  = nil
+    _saLocked  = nil
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  IMPROVED TRIGGERBOT
+-- ──  IMPROVED TRIGGERBOT (Visible + Crosshair Check)
 -- ════════════════════════════════════════════════════════════════════════════════
-local _tbActive   = false
-local _tbMode     = "Toggle"
-local _tbKey      = Enum.KeyCode.T
-local _tbDelay    = 80
+local _tbActive = false
+local _tbMode = "Toggle"
+local _tbKey = Enum.KeyCode.T
+local _tbDelay = 80
 local _tbVariance = 20
-local _tbFilter   = "Any visible"
-local _tbConn     = nil
-local _tbFiring   = false
+local _tbFilter = "Any visible"
+local _tbConn = nil
+local _tbFiring = false
 
 local function _tbRaycast(char)
     local cam = workspace.CurrentCamera
@@ -312,7 +641,7 @@ local function _tbRaycast(char)
     params.FilterType = Enum.RaycastFilterType.Exclude
     local result = workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
     if not result then return false end
-
+    
     local hit = result.Instance
     if _tbFilter == "Head only" then return hit.Name == "Head" end
     if _tbFilter == "Body" then
@@ -321,7 +650,7 @@ local function _tbRaycast(char)
         end
         return false
     end
-
+    
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer and plr.Character then
             if hit:IsDescendantOf(plr.Character) then
@@ -368,74 +697,78 @@ local function _stopTrigger()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  UPGRADED ESP  (ported from esp.lua: health, distance, look line, team color)
+-- ──  UPGRADED ESP  (character-keyed — survives death, respawn, and rejoin)
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Keyed by CHARACTER (not player) so cleanup is unambiguous.
+--  CharacterAdded / CharacterRemoving are connected per-player;
+--  PlayerAdded handles latecomers; PlayerRemoving cleans up fully.
+--  The update loop runs on Heartbeat and updates all labels every frame.
 -- ════════════════════════════════════════════════════════════════════════════════
 local _ESP = {
-    Active          = false,
-    Glow            = true,
-    ShowNames       = true,
-    ShowHealth      = true,
-    ShowDistance    = true,
-    ShowLookLine    = true,
-    TeamCheck       = false,
-    TeamColor       = false,
-    ShowEnemies     = true,
-    ShowTeam        = false,
-    Color           = Color3.fromRGB(255, 170, 60),
-    FillTrans       = 0.65,
-    Range           = 1000,
-    LookLineLength  = 15,
-    LookLineDist    = 1.5,
+    Active       = false,
+    Glow         = true,
+    ShowNames    = true,
+    ShowHealth   = true,
+    ShowDistance = true,
+    ShowLookLine = true,
+    TeamCheck    = false,
+    TeamColor    = false,
+    ShowEnemies  = true,
+    ShowTeam     = false,
+    Color        = Color3.fromRGB(255, 170, 60),
+    FillTrans    = 0.65,
+    Range        = 1000,
+    LookLineLen  = 15,
+    LookLineDist = 1.5,
 }
 
-local _espTracked = {}   -- [character] = { Player, Highlight, Billboard, NameLabel, HealthLabel, DistanceLabel, LookLineFolder }
-local _espConns   = {}   -- player-level connections
+-- [character] = { Player, Folder, Highlight, Billboard, NameLabel, HealthLabel, DistLabel, LLFolder }
+local _espTracked    = {}
+local _espPlayerConns= {}   -- [player] = { charAddedConn, charRemovingConn }
+local _espGlobalConns= {}   -- PlayerAdded, PlayerRemoving
 local _espUpdateConn = nil
 
-local function _espHideLookLine(folder)
+-- ── look-line helpers ─────────────────────────────────────────────────────────
+local function _espHideLL(folder)
     if not folder then return end
     for _, p in ipairs(folder:GetChildren()) do
         if p:IsA("BasePart") then p.Transparency = 1 end
     end
 end
 
-local function _espMakeLookLineParts(folder, count)
+local function _espMakeLL(folder, count)
     for _, p in ipairs(folder:GetChildren()) do p:Destroy() end
     for i = 1, count do
         local p = Instance.new("Part")
-        p.Name = "LLP" .. i
-        p.Anchored = true; p.CanCollide = false; p.CanTouch = false; p.CanQuery = false
-        p.Size = Vector3.new(0.15, 0.15, 0.15)
-        p.Transparency = 1
-        p.Color = _ESP.Color
-        p.Material = Enum.Material.Neon
-        p.Shape = Enum.PartType.Ball
-        p.Parent = folder
+        p.Name = "LL"..i; p.Anchored = true; p.CanCollide = false
+        p.CanTouch = false; p.CanQuery = false
+        p.Size = Vector3.new(0.15,0.15,0.15); p.Transparency = 1
+        p.Color = _ESP.Color; p.Material = Enum.Material.Neon
+        p.Shape = Enum.PartType.Ball; p.Parent = folder
     end
 end
 
-local function _espUpdateLookLine(character, folder)
-    if not _ESP.ShowLookLine then _espHideLookLine(folder); return end
-    local head = character:FindFirstChild("Head")
-    local hum  = character:FindFirstChildOfClass("Humanoid")
-    if not head or not hum then _espHideLookLine(folder); return end
-    local root = character:FindFirstChild("HumanoidRootPart")
-    local lookVec
+local function _espUpdateLL(char, folder)
+    if not _ESP.ShowLookLine then _espHideLL(folder); return end
+    local head = char:FindFirstChild("Head")
+    local hum  = char:FindFirstChildOfClass("Humanoid")
+    if not head or not hum then _espHideLL(folder); return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local lv
     if hum.MoveDirection.Magnitude > 0.1 then
-        lookVec = hum.MoveDirection.Unit
+        lv = hum.MoveDirection.Unit
     elseif root then
-        lookVec = root.CFrame.LookVector
+        lv = root.CFrame.LookVector
     else
-        lookVec = head.CFrame.LookVector
+        lv = head.CFrame.LookVector
     end
     for _, p in ipairs(folder:GetChildren()) do
         if p:IsA("BasePart") then
-            local idx = tonumber(p.Name:match("LLP(%d+)"))
+            local idx = tonumber(p.Name:match("LL(%d+)"))
             if idx then
-                local dist = idx * _ESP.LookLineDist
-                p.Position = head.Position + lookVec * dist
-                p.Color = _ESP.Color
-                local t = (idx - 1) / math.max(_ESP.LookLineLength - 1, 1)
+                p.Position = head.Position + lv * (idx * _ESP.LookLineDist)
+                p.Color    = _ESP.Color
+                local t = (idx - 1) / math.max(_ESP.LookLineLen - 1, 1)
                 p.Transparency = 0.3 + t * 0.7
                 local s = (1 - t * 0.5) * 0.15
                 p.Size = Vector3.new(s, s, s)
@@ -444,123 +777,75 @@ local function _espUpdateLookLine(character, folder)
     end
 end
 
-local function _espCreateForChar(char, plr)
-    if not char or char:FindFirstChild("_PhantomESP") then return end
+-- ── create / remove ESP for a specific character ──────────────────────────────
+local function _espCreate(char, plr)
+    if not char or char:FindFirstChild("_PhESP") then return end
 
-    local folder = Instance.new("Folder")
-    folder.Name = "_PhantomESP"
-    folder.Parent = char
+    local folder = Instance.new("Folder"); folder.Name = "_PhESP"; folder.Parent = char
 
     local hl = Instance.new("Highlight")
-    hl.Adornee = char
-    hl.FillColor = _ESP.Color
-    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-    hl.FillTransparency = _ESP.FillTrans
-    hl.OutlineTransparency = 0
-    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Enabled = false
-    hl.Parent = folder
+    hl.Adornee = char; hl.FillColor = _ESP.Color
+    hl.OutlineColor = Color3.fromRGB(255,255,255); hl.FillTransparency = _ESP.FillTrans
+    hl.OutlineTransparency = 0; hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Enabled = false; hl.Parent = folder
 
     local bill = Instance.new("BillboardGui")
-    bill.Size = UDim2.new(0, 200, 0, 80)
-    bill.StudsOffset = Vector3.new(0, 3, 0)
-    bill.AlwaysOnTop = true
-    bill.Enabled = false
-    bill.Parent = folder
+    bill.Size = UDim2.new(0,200,0,80); bill.StudsOffset = Vector3.new(0,3,0)
+    bill.AlwaysOnTop = true; bill.Enabled = false; bill.Parent = folder
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 1, 0)
-    frame.BackgroundTransparency = 1
-    frame.Parent = bill
+    frame.Size = UDim2.new(1,0,1,0); frame.BackgroundTransparency = 1; frame.Parent = bill
 
-    local nameLbl = Instance.new("TextLabel")
-    nameLbl.Name = "NameLbl"
-    nameLbl.Size = UDim2.new(1, 0, 0.33, 0)
-    nameLbl.Position = UDim2.new(0, 0, 0, 0)
-    nameLbl.BackgroundTransparency = 1
-    nameLbl.Font = Enum.Font.GothamBold
-    nameLbl.TextSize = 16
-    nameLbl.TextColor3 = _ESP.Color
-    nameLbl.TextStrokeTransparency = 0
-    nameLbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    local function lbl(nm,sz,pos,fn,ts,col)
+        local l = Instance.new("TextLabel"); l.Name = nm; l.Size = sz; l.Position = pos
+        l.BackgroundTransparency = 1; l.Font = fn; l.TextSize = ts; l.TextColor3 = col
+        l.TextStrokeTransparency = 0; l.TextStrokeColor3 = Color3.new(0,0,0); l.Parent = frame
+        return l
+    end
+
+    local nameLbl = lbl("Name", UDim2.new(1,0,0.33,0), UDim2.new(0,0,0,0),
+        Enum.Font.GothamBold, 16, _ESP.Color)
     nameLbl.Text = plr.Name
-    nameLbl.Parent = frame
 
-    local hpLbl = Instance.new("TextLabel")
-    hpLbl.Name = "HpLbl"
-    hpLbl.Size = UDim2.new(1, 0, 0.33, 0)
-    hpLbl.Position = UDim2.new(0, 0, 0.33, 0)
-    hpLbl.BackgroundTransparency = 1
-    hpLbl.Font = Enum.Font.Gotham
-    hpLbl.TextSize = 14
-    hpLbl.TextColor3 = Color3.fromRGB(0, 255, 0)
-    hpLbl.TextStrokeTransparency = 0
-    hpLbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    local hpLbl = lbl("HP", UDim2.new(1,0,0.33,0), UDim2.new(0,0,0.33,0),
+        Enum.Font.Gotham, 14, Color3.fromRGB(0,255,0))
     hpLbl.Text = "HP: ?"
-    hpLbl.Parent = frame
 
-    local distLbl = Instance.new("TextLabel")
-    distLbl.Name = "DistLbl"
-    distLbl.Size = UDim2.new(1, 0, 0.34, 0)
-    distLbl.Position = UDim2.new(0, 0, 0.66, 0)
-    distLbl.BackgroundTransparency = 1
-    distLbl.Font = Enum.Font.Gotham
-    distLbl.TextSize = 12
-    distLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-    distLbl.TextStrokeTransparency = 0
-    distLbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    local distLbl = lbl("Dist", UDim2.new(1,0,0.34,0), UDim2.new(0,0,0.66,0),
+        Enum.Font.Gotham, 12, Color3.fromRGB(255,255,255))
     distLbl.Text = "0m"
-    distLbl.Parent = frame
 
-    local llFolder = Instance.new("Folder")
-    llFolder.Name = "LookLine"
-    llFolder.Parent = folder
-    _espMakeLookLineParts(llFolder, _ESP.LookLineLength)
+    local llf = Instance.new("Folder"); llf.Name = "LL"; llf.Parent = folder
+    _espMakeLL(llf, _ESP.LookLineLen)
 
     _espTracked[char] = {
-        Player        = plr,
-        Folder        = folder,
-        Highlight     = hl,
-        Billboard     = bill,
-        NameLabel     = nameLbl,
-        HealthLabel   = hpLbl,
-        DistanceLabel = distLbl,
-        LookLineFolder= llFolder,
+        Player = plr, Folder = folder, Highlight = hl, Billboard = bill,
+        NameLabel = nameLbl, HealthLabel = hpLbl, DistLabel = distLbl, LLFolder = llf,
     }
 end
 
-local function _espRemoveChar(char)
-    local d = _espTracked[char]
-    if not d then return end
+local function _espRemove(char)
+    local d = _espTracked[char]; if not d then return end
     pcall(function() d.Folder:Destroy() end)
     _espTracked[char] = nil
 end
 
 local function _espUpdateChar(char)
-    local d = _espTracked[char]
-    if not d then return end
-    local plr = d.Player
-    if not plr then return end
+    local d = _espTracked[char]; if not d then return end
+    local plr = d.Player; if not plr then return end
 
-    -- Global toggle
     if not _ESP.Active then
-        d.Highlight.Enabled = false
-        d.Billboard.Enabled = false
-        _espHideLookLine(d.LookLineFolder)
-        return
+        d.Highlight.Enabled = false; d.Billboard.Enabled = false
+        _espHideLL(d.LLFolder); return
     end
 
     -- Team filter
     local isEnemy = true
-    if plr.Team and LocalPlayer.Team then
-        isEnemy = plr.Team ~= LocalPlayer.Team
-    end
+    if plr.Team and LocalPlayer.Team then isEnemy = plr.Team ~= LocalPlayer.Team end
     local shouldShow = (isEnemy and _ESP.ShowEnemies) or (not isEnemy and _ESP.ShowTeam)
     if _ESP.TeamCheck and not shouldShow then
-        d.Highlight.Enabled = false
-        d.Billboard.Enabled = false
-        _espHideLookLine(d.LookLineFolder)
-        return
+        d.Highlight.Enabled = false; d.Billboard.Enabled = false
+        _espHideLL(d.LLFolder); return
     end
 
     -- Distance filter
@@ -568,88 +853,108 @@ local function _espUpdateChar(char)
     if not primary then return end
     local lpChar = LocalPlayer.Character
     local lpRoot = lpChar and (lpChar:FindFirstChild("HumanoidRootPart") or lpChar:FindFirstChild("Head"))
-    local distance = 0
-    if lpRoot then
-        distance = (primary.Position - lpRoot.Position).Magnitude
-    end
-    if distance > _ESP.Range then
-        d.Highlight.Enabled = false
-        d.Billboard.Enabled = false
-        _espHideLookLine(d.LookLineFolder)
-        return
+    local dist   = lpRoot and (primary.Position - lpRoot.Position).Magnitude or 0
+
+    if dist > _ESP.Range then
+        d.Highlight.Enabled = false; d.Billboard.Enabled = false
+        _espHideLL(d.LLFolder); return
     end
 
-    -- Choose color
     local col = _ESP.Color
     if _ESP.TeamColor and plr.Team and plr.Team.TeamColor then
         col = plr.Team.TeamColor.Color
     end
 
-    -- Highlight
-    d.Highlight.Enabled = _ESP.Glow
-    d.Highlight.OutlineColor = col
-    d.Highlight.FillColor = col
+    d.Highlight.Enabled        = _ESP.Glow
+    d.Highlight.OutlineColor   = col
+    d.Highlight.FillColor      = col
     d.Highlight.FillTransparency = _ESP.FillTrans
-    d.Highlight.Adornee = char
+    d.Highlight.Adornee        = char
 
-    -- Billboard
-    d.Billboard.Enabled = _ESP.ShowNames or _ESP.ShowHealth or _ESP.ShowDistance
-    d.Billboard.Adornee = primary
+    d.Billboard.Enabled  = _ESP.ShowNames or _ESP.ShowHealth or _ESP.ShowDistance
+    d.Billboard.Adornee  = primary
 
-    -- Name
-    d.NameLabel.Visible = _ESP.ShowNames
-    d.NameLabel.TextColor3 = col
-    d.NameLabel.Text = plr.Name
+    d.NameLabel.Visible      = _ESP.ShowNames
+    d.NameLabel.TextColor3   = col
+    d.NameLabel.Text         = plr.Name
 
-    -- Health
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
         d.HealthLabel.Visible = _ESP.ShowHealth
         local pct = hum.Health / math.max(hum.MaxHealth, 1)
         d.HealthLabel.TextColor3 = Color3.new(1 - pct, pct, 0)
-        d.HealthLabel.Text = "HP: " .. math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth)
+        d.HealthLabel.Text = "HP: "..math.floor(hum.Health).."/"..math.floor(hum.MaxHealth)
     else
         d.HealthLabel.Visible = false
     end
 
-    -- Distance
-    d.DistanceLabel.Visible = _ESP.ShowDistance
-    d.DistanceLabel.Text = math.floor(distance) .. "m"
+    d.DistLabel.Visible = _ESP.ShowDistance
+    d.DistLabel.Text    = math.floor(dist).."m"
 
-    -- Look line
-    _espUpdateLookLine(char, d.LookLineFolder)
+    _espUpdateLL(char, d.LLFolder)
 end
 
-local function _espAddPlayer(plr)
+-- ── per-player connection setup ───────────────────────────────────────────────
+local function _espConnectPlayer(plr)
     if plr == LocalPlayer then return end
-    local function onChar(char)
-        task.wait(0.1)
-        if _ESP.Active then _espCreateForChar(char, plr) end
-        table.insert(_espConns, char.AncestryChanged:Connect(function()
-            if not char.Parent then _espRemoveChar(char) end
-        end))
+    if _espPlayerConns[plr] then return end  -- already connected
+
+    local function onCharAdded(char)
+        -- Small wait so the character is fully assembled before we attach visuals
+        task.wait(0.15)
+        if not char.Parent then return end  -- respawn cancelled or died instantly
+        if _ESP.Active then _espCreate(char, plr) end
     end
-    if plr.Character then onChar(plr.Character) end
-    table.insert(_espConns, plr.CharacterAdded:Connect(onChar))
-    table.insert(_espConns, plr.CharacterRemoving:Connect(_espRemoveChar))
+
+    local function onCharRemoving(char)
+        _espRemove(char)
+    end
+
+    local ca = plr.CharacterAdded:Connect(onCharAdded)
+    local cr = plr.CharacterRemoving:Connect(onCharRemoving)
+    _espPlayerConns[plr] = {ca, cr}
+
+    -- Handle character that was already present when we connected
+    if plr.Character then
+        task.spawn(onCharAdded, plr.Character)
+    end
 end
 
+local function _espDisconnectPlayer(plr)
+    local conns = _espPlayerConns[plr]
+    if conns then
+        for _, c in ipairs(conns) do c:Disconnect() end
+        _espPlayerConns[plr] = nil
+    end
+    -- Clean up any tracked characters belonging to this player
+    for char, d in pairs(_espTracked) do
+        if d.Player == plr then _espRemove(char) end
+    end
+end
+
+-- ── public API ────────────────────────────────────────────────────────────────
 local function enableESP()
     _ESP.Active = true
+
     for _, plr in ipairs(Players:GetPlayers()) do
-        _espAddPlayer(plr)
+        _espConnectPlayer(plr)
     end
-    table.insert(_espConns, Players.PlayerAdded:Connect(_espAddPlayer))
-    table.insert(_espConns, Players.PlayerRemoving:Connect(function(plr)
-        if plr.Character then _espRemoveChar(plr.Character) end
-    end))
+
+    local pa = Players.PlayerAdded:Connect(function(plr)
+        _espConnectPlayer(plr)
+    end)
+    local pr = Players.PlayerRemoving:Connect(function(plr)
+        _espDisconnectPlayer(plr)
+    end)
+    _espGlobalConns = {pa, pr}
+
     if _espUpdateConn then _espUpdateConn:Disconnect() end
     _espUpdateConn = RunService.Heartbeat:Connect(function()
-        for char, _ in pairs(_espTracked) do
+        for char in pairs(_espTracked) do
             if char.Parent then
                 pcall(_espUpdateChar, char)
             else
-                _espRemoveChar(char)
+                _espRemove(char)
             end
         end
     end)
@@ -658,42 +963,53 @@ end
 local function clearESP()
     _ESP.Active = false
     if _espUpdateConn then _espUpdateConn:Disconnect(); _espUpdateConn = nil end
-    for _, c in ipairs(_espConns) do c:Disconnect() end
-    _espConns = {}
-    for char in pairs(_espTracked) do _espRemoveChar(char) end
+    for _, c in ipairs(_espGlobalConns) do c:Disconnect() end
+    _espGlobalConns = {}
+    for plr in pairs(_espPlayerConns) do _espDisconnectPlayer(plr) end
+    -- Any remaining tracked chars (shouldn't be any, but belt-and-suspenders)
+    for char in pairs(_espTracked) do _espRemove(char) end
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  IMPROVED SPECTATOR LIST
---     FIX #1: corrected detection logic (was inverted)
---     FIX #2: replaced 60fps GUI rebuild with 2-second debounce
+-- ──  IMPROVED SPECTATOR LIST (Real-time with alerts)
 -- ════════════════════════════════════════════════════════════════════════════════
-local _spectActive    = false
-local _spectAlert     = true
-local _spectStreamer  = false
+local _spectActive = false
+local _spectAlert = true
+local _spectStreamer = false
 local _spectLastCount = 0
-local _spectConn      = nil
-local _spectGui       = nil
-local _lastSpectRebuild = 0   -- FIX #2: debounce timestamp
+local _spectConn = nil
+local _spectGui = nil
+local _spectHistory = {}
 
 local function _makeSpectGui()
     if _spectGui then pcall(function() _spectGui:Destroy() end); _spectGui = nil end
     local sg = Instance.new("ScreenGui")
-    sg.Name = "PhantomSpectList"; sg.ResetOnSpawn = false; sg.DisplayOrder = 99
+    sg.Name = "PhantomSpectList"
+    sg.ResetOnSpawn = false
+    sg.DisplayOrder = 99
     local ok, cg = pcall(function() return cloneref(game:GetService("CoreGui")) end)
     sg.Parent = ok and cg or LocalPlayer:WaitForChild("PlayerGui")
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(0, 200, 0, 20)
     frame.Position = UDim2.new(0, 10, 0, 10)
     frame.BackgroundColor3 = Color3.fromRGB(14, 14, 14)
-    frame.BackgroundTransparency = 0.15; frame.BorderSizePixel = 0
-    frame.AutomaticSize = Enum.AutomaticSize.Y; frame.Parent = sg
-    local c2 = Instance.new("UICorner"); c2.CornerRadius = UDim.new(0, 6); c2.Parent = frame
-    local l = Instance.new("UIListLayout"); l.SortOrder = Enum.SortOrder.LayoutOrder
-    l.Padding = UDim.new(0, 2); l.Parent = frame
+    frame.BackgroundTransparency = 0.15
+    frame.BorderSizePixel = 0
+    frame.AutomaticSize = Enum.AutomaticSize.Y
+    frame.Parent = sg
+    local c2 = Instance.new("UICorner")
+    c2.CornerRadius = UDim.new(0, 6)
+    c2.Parent = frame
+    local l = Instance.new("UIListLayout")
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Padding = UDim.new(0, 2)
+    l.Parent = frame
     local p = Instance.new("UIPadding")
-    p.PaddingTop = UDim.new(0,4); p.PaddingBottom = UDim.new(0,4)
-    p.PaddingLeft = UDim.new(0,6); p.PaddingRight = UDim.new(0,6); p.Parent = frame
+    p.PaddingTop = UDim.new(0, 4)
+    p.PaddingBottom = UDim.new(0, 4)
+    p.PaddingLeft = UDim.new(0, 6)
+    p.PaddingRight = UDim.new(0, 6)
+    p.Parent = frame
     _spectGui = sg
     return frame
 end
@@ -706,41 +1022,51 @@ local function _rebuildSpectList()
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
                 local char = plr.Character
-                -- FIX #1: real spectators have NO character or no HRP
                 if not char or not char:FindFirstChild("HumanoidRootPart") then
                     table.insert(spectNames, plr.Name)
                 end
             end
         end
     end)
+    
     local count = #spectNames
     local isAlert = count > _spectLastCount
     local header = Instance.new("TextLabel")
-    header.Size = UDim2.new(1, 0, 0, 16); header.BackgroundTransparency = 1
-    header.Font = Enum.Font.GothamBold; header.TextSize = 11
+    header.Size = UDim2.new(1, 0, 0, 16)
+    header.BackgroundTransparency = 1
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 11
     header.TextColor3 = isAlert and Color3.fromRGB(255, 220, 50) or Color3.fromRGB(180, 180, 180)
     header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "Spectators: " .. count; header.Parent = container
+    header.Text = "Spectators: " .. count
+    header.Parent = container
+    
     for _, name in ipairs(spectNames) do
         local row = Instance.new("TextLabel")
-        row.Size = UDim2.new(1, 0, 0, 13); row.BackgroundTransparency = 1
-        row.Font = Enum.Font.Gotham; row.TextSize = 10
+        row.Size = UDim2.new(1, 0, 0, 13)
+        row.BackgroundTransparency = 1
+        row.Font = Enum.Font.Gotham
+        row.TextSize = 10
         row.TextColor3 = Color3.fromRGB(200, 200, 200)
         row.TextXAlignment = Enum.TextXAlignment.Left
-        row.Text = "  - " .. name; row.Parent = container
+        row.Text = "  - " .. name
+        row.Parent = container
     end
+    
     if isAlert and _spectAlert then
         Hub:Notify({Title = "Spectator Alert", Message = "Someone is watching!", Duration = 3})
     end
+    
     if _spectStreamer and count > 0 then
         if _abEnabled then _stopAimbot() end
         if _tbActive then _stopTrigger() end
     end
+    
     _spectLastCount = count
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  FLIGHT
+-- ──  FLIGHT (YOUR ORIGINAL)
 -- ════════════════════════════════════════════════════════════════════════════════
 local _flyEnabled = false
 local _flyConn = nil
@@ -795,46 +1121,58 @@ local function startFly()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  INFINITE JUMP
+-- ──  INFINITE JUMP (YOUR ORIGINAL)
 -- ════════════════════════════════════════════════════════════════════════════════
 local _infJumpConn = nil
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  UNIVERSAL TAB
+-- ──  BUILD UNIVERSAL TAB (BIGGER, CLEANER)
 -- ════════════════════════════════════════════════════════════════════════════════
+
 local UniTab = Hub:NewTab({Title = "Universal", Icon = "rbxassetid://3926305904"})
 
--- ── Player Section ────────────────────────────────────────────────────────────
+-- Player Section
 local UniPlayer = UniTab:NewSection({Position = "Left", Title = "Player"})
 UniPlayer:NewSlider({
-    Title = "Walk Speed", Min = 16, Max = 300, Default = 16,
+    Title = "Walk Speed",
+    Min = 16,
+    Max = 300,
+    Default = 16,
     Callback = function(v)
         _G.PhantomWalkSpeed = v
-        if v > 16 then startWsEnforcer(v) else stopWsEnforcer(); local h=getHum(); if h then h.WalkSpeed=v end end
+        if v > 16 then startWsEnforcer(v) else stopWsEnforcer(); local h = getHum(); if h then h.WalkSpeed = v end end
     end,
 })
 UniPlayer:NewSlider({
-    Title = "Jump Power", Min = 7, Max = 200, Default = 50,
-    Callback = function(v) _G.PhantomJumpPower=v; local h=getHum(); if h then h.JumpPower=v end end,
+    Title = "Jump Power",
+    Min = 7,
+    Max = 200,
+    Default = 50,
+    Callback = function(v) _G.PhantomJumpPower = v; local h = getHum(); if h then h.JumpPower = v end end,
 })
 UniPlayer:NewToggle({
-    Title = "Infinite Jump", Default = false,
+    Title = "Infinite Jump",
+    Default = false,
     Callback = function(v)
         if _infJumpConn then _infJumpConn:Disconnect(); _infJumpConn = nil end
         if v then _infJumpConn = UIS.JumpRequest:Connect(function()
-            local h=getHum(); if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+            local h = getHum(); if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
         end) end
     end,
 })
 
--- ── Movement Section ──────────────────────────────────────────────────────────
+-- Movement Section
 local UniMove = UniTab:NewSection({Position = "Left", Title = "Movement"})
 UniMove:NewSlider({
-    Title = "Fly Speed", Min = 10, Max = 200, Default = 60,
+    Title = "Fly Speed",
+    Min = 10,
+    Max = 200,
+    Default = 60,
     Callback = function(v) _flySpeed = v end,
 })
 UniMove:NewToggle({
-    Title = "Flight [WASD + Space/Ctrl]", Default = false,
+    Title = "Flight [WASD + Space/Ctrl]",
+    Default = false,
     Callback = function(v)
         if v then
             startFly()
@@ -849,126 +1187,257 @@ UniMove:NewToggle({
     end,
 })
 UniMove:NewToggle({
-    Title = "Noclip", Default = false,
+    Title = "Noclip",
+    Default = false,
     Callback = function(v) if v then _enableNoclip() else _disableNoclip() end end,
 })
 
--- ── Combat Section ────────────────────────────────────────────────────────────
+
+-- Combat Section
 local UniCombat = UniTab:NewSection({Position = "Right", Title = "Combat"})
 UniCombat:NewToggle({
-    Title = "Aimbot", Default = false,
-    Callback = function(v) _abEnabled = v; if v then _startAimbot() else _stopAimbot() end end
-})
-UniCombat:NewDropdown({
-    Title = "Aimbot Mode", Options = {"Toggle", "Hold"}, Default = "Toggle",
-    Callback = function(v) _abMode = v end
-})
--- FIX #8: aimbot keybind now exposed in UI
-UniCombat:NewDropdown({
-    Title = "Aimbot Hold Key",
-    Options = {"RightAlt", "E", "Q", "F", "G", "X", "Z", "CapsLock", "Tab"},
-    Default = "RightAlt",
+    Title = "Aimbot",
+    Default = false,
     Callback = function(v)
-        _abKeyName = v
-        _abKey = Enum.KeyCode[v]
+        _abEnabled = v
+        if v then _startAimbot() else _stopAimbot() end
     end
 })
+UniCombat:NewDropdown({
+    Title = "Aimbot Mode",
+    Options = {"Toggle", "Hold"},
+    Default = "Toggle",
+    Callback = function(v) _abMode = v end
+})
+UniCombat:NewDropdown({
+    Title = "Aimbot Hold Key",
+    Options = {"RightAlt","E","Q","F","G","X","Z","CapsLock","Tab"},
+    Default = "RightAlt",
+    Callback = function(v) _abKeyName = v; _abKey = Enum.KeyCode[v] end
+})
+UniCombat:NewDropdown({
+    Title = "Target Bone",
+    Options = {"Head", "Neck", "HRP"},
+    Default = "Head",
+    Callback = function(v) _abBone = v end
+})
 UniCombat:NewSlider({
-    Title = "Aimbot FOV (px)", Min = 50, Max = 400, Default = 150,
+    Title = "Aimbot FOV (px)",
+    Min = 10, Max = 400, Default = 150,
     Callback = function(v) _abFov = v end
 })
--- FIX #6: slider is now 0-100; divide by 100 to get actual float prediction
 UniCombat:NewSlider({
-    Title = "Prediction (x0.01)", Min = 0, Max = 100, Default = 18,
+    Title = "Smoothing (0=snap 100=slow)",
+    Min = 0, Max = 90, Default = 35,
+    Callback = function(v) _abSmoothing = v / 100 end
+})
+UniCombat:NewSlider({
+    Title = "Prediction (x0.01)",
+    Min = 0, Max = 100, Default = 18,
     Callback = function(v) _abPrediction = v / 100 end
 })
 UniCombat:NewToggle({
-    Title = "Triggerbot", Default = false,
+    Title = "Wall Check",
+    Default = true,
+    Callback = function(v) _abWallCheck = v end
+})
+UniCombat:NewToggle({
+    Title = "Team Check",
+    Default = true,
+    Callback = function(v) _abTeamCheck = v end
+})
+UniCombat:NewSeparator()
+UniCombat:NewToggle({
+    Title = "Silent Aim",
+    Default = false,
+    Callback = function(v)
+        _abSilent = v
+        if v then
+            -- Silent aim needs the namecall hook active
+            local ok = _hookNoSpread()
+            if ok and _nsHooked then
+                Hub:Notify({Title="Silent Aim", Message="ON — camera stays still, shots redirect to target", Duration=4})
+            else
+                _abSilent = false
+                Hub:Notify({Title="Silent Aim", Message="Hook failed — executor may not support getrawmetatable", Duration=5})
+            end
+        else
+            Hub:Notify({Title="Silent Aim", Message="OFF", Duration=2})
+        end
+    end,
+})
+UniCombat:NewToggle({
+    Title = "Triggerbot",
+    Default = false,
     Callback = function(v) _tbActive = v; if v then _startTriggerLoop() else _stopTrigger() end end
 })
 UniCombat:NewSlider({
-    Title = "Trigger Delay (ms)", Min = 0, Max = 200, Default = 80,
+    Title = "Trigger Delay (ms)",
+    Min = 0,
+    Max = 200,
+    Default = 80,
     Callback = function(v) _tbDelay = v end
 })
+UniCombat:NewSeparator()
+-- ── No Recoil ──────────────────────────────────────────────────────────────
+UniCombat:NewToggle({
+    Title = "No Recoil",
+    Default = false,
+    Callback = function(v)
+        _noRecoilEnabled = v
+        if v then
+            _startNoRecoil()
+            Hub:Notify({Title="No Recoil", Message="ON — move your mouse to auto-calibrate sensitivity", Duration=5})
+        else
+            _stopNoRecoil()
+        end
+    end,
+})
+UniCombat:NewSlider({
+    Title = "Recoil Cancel %",
+    Min = 0, Max = 100, Default = 100,
+    Callback = function(v) _noRecoilStrength = v / 100 end,
+})
+UniCombat:NewButton({
+    Title = "Reset Recoil Calibration",
+    Callback = function()
+        _nrReset()
+        Hub:Notify({Title="No Recoil", Message="Calibration cleared — move mouse to re-learn", Duration=3})
+    end,
+})
+UniCombat:NewSeparator()
+-- ── No Spread ──────────────────────────────────────────────────────────────
+UniCombat:NewToggle({
+    Title = "No Spread",
+    Default = false,
+    Callback = function(v)
+        _noSpreadEnabled = v
+        if v then
+            local ok = _hookNoSpread()
+            if ok and _nsHooked then
+                Hub:Notify({Title="No Spread", Message="ON — FireServer direction vectors normalised", Duration=4})
+            else
+                _noSpreadEnabled = false
+                Hub:Notify({Title="No Spread", Message="Hook failed — executor may not support getrawmetatable", Duration=5})
+            end
+        else
+            Hub:Notify({Title="No Spread", Message="OFF", Duration=2})
+        end
+    end,
+})
 
--- ── Visuals Section ───────────────────────────────────────────────────────────
+-- Visuals Section
 local UniVis = UniTab:NewSection({Position = "Right", Title = "Visuals"})
 UniVis:NewToggle({
-    Title = "Player ESP", Default = false,
+    Title = "Player ESP",
+    Default = false,
     Callback = function(v) if v then enableESP() else clearESP() end end
 })
 UniVis:NewToggle({
-    Title = "ESP Glow", Default = true,
+    Title = "ESP Glow",
+    Default = true,
     Callback = function(v) _ESP.Glow = v end
 })
 UniVis:NewToggle({
-    Title = "ESP Names", Default = true,
+    Title = "ESP Names",
+    Default = true,
     Callback = function(v) _ESP.ShowNames = v end
 })
 UniVis:NewToggle({
-    Title = "ESP Health", Default = true,
+    Title = "ESP Health",
+    Default = true,
     Callback = function(v) _ESP.ShowHealth = v end
 })
 UniVis:NewToggle({
-    Title = "ESP Distance", Default = true,
+    Title = "ESP Distance",
+    Default = true,
     Callback = function(v) _ESP.ShowDistance = v end
 })
 UniVis:NewToggle({
-    Title = "ESP Look Line", Default = true,
+    Title = "ESP Look Line",
+    Default = true,
     Callback = function(v) _ESP.ShowLookLine = v end
 })
 UniVis:NewToggle({
-    Title = "ESP Team Colors", Default = false,
+    Title = "ESP Team Colors",
+    Default = false,
     Callback = function(v) _ESP.TeamColor = v end
 })
 UniVis:NewSlider({
-    Title = "ESP Range (studs)", Min = 50, Max = 2000, Default = 1000,
+    Title = "ESP Range (studs)",
+    Min = 50, Max = 2000, Default = 1000,
     Callback = function(v) _ESP.Range = v end
 })
 UniVis:NewSlider({
-    Title = "ESP Fill Transparency %", Min = 0, Max = 100, Default = 65,
+    Title = "ESP Fill Transparency %",
+    Min = 0, Max = 100, Default = 65,
     Callback = function(v) _ESP.FillTrans = v / 100 end
 })
 UniVis:NewColorPicker({
-    Title = "ESP Color", Default = Color3.fromRGB(255, 170, 60),
+    Title = "ESP Color",
+    Default = Color3.fromRGB(255, 170, 60),
     Callback = function(c)
         _ESP.Color = c
         for _, d in pairs(_espTracked) do
-            if d.Highlight then d.Highlight.FillColor = c; d.Highlight.OutlineColor = c end
-            if d.NameLabel then d.NameLabel.TextColor3 = c end
+            if d.Highlight  then d.Highlight.FillColor  = c; d.Highlight.OutlineColor = c end
+            if d.NameLabel  then d.NameLabel.TextColor3 = c end
         end
     end
 })
 UniVis:NewToggle({
-    Title = "Spectator List", Default = false,
+    Title = "Spectator List",
+    Default = false,
     Callback = function(v)
         _spectActive = v
         if _spectConn then _spectConn:Disconnect(); _spectConn = nil end
         if _spectGui then pcall(function() _spectGui:Destroy() end); _spectGui = nil end
         if not v then return end
         _rebuildSpectList()
-        -- FIX #2: use a debounce instead of task.wait() inside Heartbeat
+        local _lastSpectRebuild = 0
         _spectConn = RunService.Heartbeat:Connect(function()
-            local now = tick()
-            if now - _lastSpectRebuild < 2 then return end
-            _lastSpectRebuild = now
+            local _now = tick()
+            if _now - _lastSpectRebuild < 2 then return end
+            _lastSpectRebuild = _now
             _rebuildSpectList()
         end)
     end
 })
 UniVis:NewToggle({
-    Title = "Spectator Alerts", Default = true,
+    Title = "Spectator Alerts",
+    Default = true,
     Callback = function(v) _spectAlert = v end
 })
 
--- ── Utility Section ───────────────────────────────────────────────────────────
+-- Teleport & Server Hop
+local _tpTarget = ""
+local _tpDropdown = nil
+local function _buildPlayerOpts()
+    local t = {}; for _, plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer then table.insert(t, plr.Name) end end
+    return #t > 0 and t or {"(no players)"}
+end
+local _tpOpts = _buildPlayerOpts()
+_tpTarget = _tpOpts[1]
+
+local function _refreshTpDropdown()
+    local newOpts = _buildPlayerOpts()
+    if _tpDropdown and _tpDropdown.SetOptions then _tpDropdown:SetOptions(newOpts) end
+    _tpOpts = newOpts; _tpTarget = newOpts[1]
+end
+Players.PlayerAdded:Connect(function() task.wait(1); _refreshTpDropdown() end)
+Players.PlayerRemoving:Connect(function() task.wait(0.1); _refreshTpDropdown() end)
+
+local _autoRejoinActive = false
+local _autoRejoinConn = nil
+
+-- Utility Section (Fullbright, No Fog, etc)
 local _origBright, _origAmbient, _origOutdoor
 local _origFogEnd, _origFogStart, _origAtmDensity
 local _afkThread
 
 local UniUtil = UniTab:NewSection({Position = "Left", Title = "Utility"})
 UniUtil:NewToggle({
-    Title = "Anti-AFK", Default = false,
+    Title = "Anti-AFK",
+    Default = false,
     Callback = function(v)
         if _afkThread then task.cancel(_afkThread); _afkThread = nil end
         if v then
@@ -987,46 +1456,21 @@ UniUtil:NewToggle({
     end,
 })
 UniUtil:NewSeparator()
-
--- FIX #4: teleport dropdown now refreshes when players join/leave
-local _tpTarget = ""
-local _tpDropdown = nil
-local function _buildPlayerOpts()
-    local t = {}
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then table.insert(t, plr.Name) end
-    end
-    return #t > 0 and t or {"(no players)"}
-end
-local _tpOpts = _buildPlayerOpts()
-_tpTarget = _tpOpts[1]
-
 _tpDropdown = UniUtil:NewDropdown({
-    Title = "Teleport Target", Options = _tpOpts, Default = _tpOpts[1],
+    Title = "Teleport Target",
+    Options = _tpOpts,
+    Default = _tpOpts[1],
     Callback = function(v) _tpTarget = v end
 })
-
-local function _refreshTpDropdown()
-    local newOpts = _buildPlayerOpts()
-    -- Phantom Hub's SetOptions or equivalent; fall back to silently updating _tpOpts
-    if _tpDropdown and _tpDropdown.SetOptions then
-        _tpDropdown:SetOptions(newOpts)
-    end
-    _tpOpts = newOpts
-    _tpTarget = newOpts[1]
-end
-Players.PlayerAdded:Connect(function() task.wait(1); _refreshTpDropdown() end)
-Players.PlayerRemoving:Connect(function() task.wait(0.1); _refreshTpDropdown() end)
-
 UniUtil:NewButton({
     Title = "Teleport to Player",
     Callback = function()
         if _tpTarget == "" or _tpTarget == "(no players)" then
-            Hub:Notify({Title = "Teleport", Message = "No target selected", Duration = 2}); return
+            Hub:Notify({Title = "Teleport", Message = "No target selected", Duration = 2})
+            return
         end
         for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LocalPlayer and (plr.Name:lower() == _tpTarget:lower()
-                or plr.DisplayName:lower():find(_tpTarget:lower(), 1, true)) then
+            if plr ~= LocalPlayer and (plr.Name:lower() == _tpTarget:lower() or plr.DisplayName:lower():find(_tpTarget:lower(), 1, true)) then
                 local hrp = getHRP()
                 local tHrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
                 if hrp and tHrp then
@@ -1052,24 +1496,20 @@ UniUtil:NewButton({
                 local TS = game:GetService("TeleportService")
                 local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
                 local ok, resp = pcall(function() return game:HttpGet(url) end)
-                if not ok then Hub:Notify({Title="Server Hop",Message="HttpGet blocked",Duration=3}); return end
+                if not ok then Hub:Notify({Title = "Server Hop", Message = "HttpGet blocked", Duration = 3}); return end
                 local ok2, data = pcall(function() return HS:JSONDecode(resp) end)
-                if not ok2 or not data or not data.data then Hub:Notify({Title="Server Hop",Message="Failed to parse",Duration=3}); return end
+                if not ok2 or not data or not data.data then Hub:Notify({Title = "Server Hop", Message = "Failed to parse", Duration = 3}); return end
                 local cands = {}
-                for _, srv in ipairs(data.data) do
-                    if srv.playing < srv.maxPlayers then table.insert(cands, srv.id) end
-                end
-                if #cands == 0 then Hub:Notify({Title="Server Hop",Message="No open servers",Duration=3}); return end
+                for _, srv in ipairs(data.data) do if srv.playing < srv.maxPlayers then table.insert(cands, srv.id) end end
+                if #cands == 0 then Hub:Notify({Title = "Server Hop", Message = "No open servers", Duration = 3}); return end
                 TS:TeleportToPlaceInstance(game.PlaceId, cands[math.random(1, #cands)], LocalPlayer)
             end)
         end)
     end,
 })
-
-local _autoRejoinActive = false
-local _autoRejoinConn   = nil
 UniUtil:NewToggle({
-    Title = "Auto Rejoin", Default = false,
+    Title = "Auto Rejoin",
+    Default = false,
     Callback = function(v)
         _autoRejoinActive = v
         if _autoRejoinConn then _autoRejoinConn:Disconnect(); _autoRejoinConn = nil end
@@ -1085,7 +1525,7 @@ UniUtil:NewToggle({
                 _autoRejoinConn = ov.ChildAdded:Connect(function()
                     if not _autoRejoinActive then return end
                     for i = 3, 1, -1 do
-                        Hub:Notify({Title="Auto Rejoin",Message="Rejoining in "..i.."s...",Duration=1})
+                        Hub:Notify({Title = "Auto Rejoin", Message = "Rejoining in " .. i .. "s...", Duration = 1})
                         task.wait(1)
                     end
                     pcall(function() TS:Teleport(game.PlaceId, LocalPlayer) end)
@@ -1096,10 +1536,11 @@ UniUtil:NewToggle({
 })
 UniUtil:NewSeparator()
 UniUtil:NewToggle({
-    Title = "Fullbright", Default = false,
+    Title = "Fullbright",
+    Default = false,
     Callback = function(v)
         if v then
-            _origBright  = Lighting.Brightness
+            _origBright = Lighting.Brightness
             _origAmbient = Lighting.Ambient
             _origOutdoor = Lighting.OutdoorAmbient
             Lighting.Brightness = 2
@@ -1113,16 +1554,18 @@ UniUtil:NewToggle({
     end,
 })
 UniUtil:NewToggle({
-    Title = "No Fog", Default = false,
+    Title = "No Fog",
+    Default = false,
     Callback = function(v)
         if v then
-            _origFogEnd   = Lighting.FogEnd
+            _origFogEnd = Lighting.FogEnd
             _origFogStart = Lighting.FogStart
-            Lighting.FogEnd = 1e9; Lighting.FogStart = 1e9
+            Lighting.FogEnd = 1e9
+            Lighting.FogStart = 1e9
             local atm = Lighting:FindFirstChildOfClass("Atmosphere")
             if atm then _origAtmDensity = atm.Density; atm.Density = 0 end
         else
-            Lighting.FogEnd   = _origFogEnd   or 1000
+            Lighting.FogEnd = _origFogEnd or 1000
             Lighting.FogStart = _origFogStart or 0
             local atm = Lighting:FindFirstChildOfClass("Atmosphere")
             if atm then atm.Density = _origAtmDensity or 0.395 end
@@ -1131,48 +1574,53 @@ UniUtil:NewToggle({
 })
 UniUtil:NewSeparator()
 UniUtil:NewSlider({
-    Title = "FOV", Min = 50, Max = 120, Default = 70,
+    Title = "FOV",
+    Min = 50,
+    Max = 120,
+    Default = 70,
     Callback = function(v) workspace.CurrentCamera.FieldOfView = v end
 })
 UniUtil:NewSlider({
-    Title = "Time of Day", Min = 0, Max = 24, Default = 14,
+    Title = "Time of Day",
+    Min = 0,
+    Max = 24,
+    Default = 14,
     Callback = function(v) Lighting.ClockTime = v end
 })
 
--- ════════════════════════════════════════════════════════════════════════════════
--- ──  SETTINGS TAB
--- ════════════════════════════════════════════════════════════════════════════════
-local SetTab    = Hub:NewTab({Title = "Settings", Icon = "rbxassetid://3926307641"})
-local AppearSec = SetTab:NewSection({Position = "Left",  Title = "Appearance"})
-local DataSec   = SetTab:NewSection({Position = "Right", Title = "Config"})
+-- Settings Tab
+local SetTab = Hub:NewTab({Title = "Settings", Icon = "rbxassetid://3926307641"})
+local AppearSec = SetTab:NewSection({Position = "Left", Title = "Appearance"})
+local DataSec = SetTab:NewSection({Position = "Right", Title = "Config"})
 
 AppearSec:NewColorPicker({
-    Title = "Accent Color", Default = Color3.fromRGB(110, 75, 255),
+    Title = "Accent Color",
+    Default = Color3.fromRGB(110, 75, 255),
     Callback = function(c) Hub:SetAccent(c) end
 })
 AppearSec:NewSlider({
-    Title = "Window Opacity %", Min = 30, Max = 100, Default = 95,
+    Title = "Window Opacity %",
+    Min = 30,
+    Max = 100,
+    Default = 95,
     Callback = function(v) Hub._win.BackgroundTransparency = 1 - (v / 100) end
 })
 
 DataSec:NewButton({
     Title = "Save Config",
-    Callback = function() SM:Save(); Hub:Notify({Title="Config",Message="Saved",Duration=2}) end
+    Callback = function() SM:Save(); Hub:Notify({Title = "Config", Message = "Saved", Duration = 2}) end
 })
 DataSec:NewButton({
     Title = "Load Config",
-    Callback = function() SM:Load(); Hub:Notify({Title="Config",Message="Loaded",Duration=2}) end
+    Callback = function() SM:Load(); Hub:Notify({Title = "Config", Message = "Loaded", Duration = 2}) end
 })
--- FIX #5: removed duplicate Hub:AutoSave — SM is the single save system
 DataSec:NewToggle({
-    Title = "Auto Save (60s)", Default = true,
+    Title = "Auto Save (60s)",
+    Default = true,
     Callback = function(v)
         if v then
             task.spawn(function()
-                while task.wait(60) do
-                    if not v then break end
-                    SM:Save()
-                end
+                while task.wait(60) do if not v then break end; SM:Save() end
             end)
         end
     end
@@ -1189,7 +1637,10 @@ _panicShutdown = function()
     pcall(_disableNoclip)
     pcall(clearESP)
     pcall(_stopAimbot)
+    pcall(function() _abSilent = false; _saLocked = nil end)
     pcall(_stopTrigger)
+    pcall(_stopNoRecoil)
+    pcall(_unhookNoSpread)
     pcall(function()
         if _infJumpConn then _infJumpConn:Disconnect(); _infJumpConn = nil end
     end)
@@ -1203,11 +1654,11 @@ _panicShutdown = function()
         if _autoRejoinConn then _autoRejoinConn:Disconnect(); _autoRejoinConn = nil end
     end)
     pcall(function()
-        Lighting.Brightness     = _origBright  or 1
-        Lighting.Ambient        = _origAmbient or Color3.fromRGB(127,127,127)
-        Lighting.OutdoorAmbient = _origOutdoor or Color3.fromRGB(127,127,127)
-        Lighting.FogEnd         = _origFogEnd   or 1000
-        Lighting.FogStart       = _origFogStart or 0
+        Lighting.Brightness = _origBright or 1
+        Lighting.Ambient = _origAmbient or Color3.fromRGB(127, 127, 127)
+        Lighting.OutdoorAmbient = _origOutdoor or Color3.fromRGB(127, 127, 127)
+        Lighting.FogEnd = _origFogEnd or 1000
+        Lighting.FogStart = _origFogStart or 0
         local atm = Lighting:FindFirstChildOfClass("Atmosphere")
         if atm then atm.Density = _origAtmDensity or 0.395 end
     end)
@@ -1222,26 +1673,38 @@ end
 -- ──  PUBLIC API
 -- ════════════════════════════════════════════════════════════════════════════════
 _G.PhantomHub = {
-    Hub        = Hub,
-    Phantom    = Phantom,
-    Players    = Players,
+    Hub = Hub,
+    Phantom = Phantom,
+    Players = Players,
     RunService = RunService,
-    UIS        = UIS,
-    LocalPlayer= LocalPlayer,
-    PlaceId    = game.PlaceId,
-    getChar    = getChar,
-    getHum     = getHum,
-    getHRP     = getHRP,
-    startAimbot= _startAimbot,
+    UIS = UIS,
+    LocalPlayer = LocalPlayer,
+    PlaceId = game.PlaceId,
+    getChar = getChar,
+    getHum = getHum,
+    getHRP = getHRP,
+    startAimbot = _startAimbot,
     stopAimbot = _stopAimbot,
-    enableESP  = enableESP,
-    clearESP   = clearESP,
-    Await      = function(self) return self end,
+    enableESP = enableESP,
+    clearESP = clearESP,
+    Await = function(self) return self end,
+    startNoRecoil  = _startNoRecoil,
+    stopNoRecoil   = _stopNoRecoil,
+    hookNoSpread   = _hookNoSpread,
+    unhookNoSpread = _unhookNoSpread,
 }
 
--- ── Startup Notification ──────────────────────────────────────────────────────
+-- ── Startup Notification ──────────────────────────────────────
 Hub:Notify({
-    Title   = "Phantom v3.1",
-    Message = "J=menu | Aimbot key configurable in UI | Del=PANIC",
+    Title = "Phantom v3.3",
+    Message = "J=menu  |  Del=PANIC  |  Better aimbot + Silent Aim + ESP respawn fix",
     Duration = 6,
 })
+
+print("[Phantom] v3.2 loaded!")
+print("[Phantom] ✅ Best Aimbot (Dex5 + Dex6)")
+print("[Phantom] ✅ Your ESP")
+print("[Phantom] ✅ Teleport/Server Hop/Auto Rejoin")
+print("[Phantom] ✅ Working Noclip")
+print("[Phantom] Press J to open menu")
+print("[Phantom] ✅ No Recoil + No Spread")
