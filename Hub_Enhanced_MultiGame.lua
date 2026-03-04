@@ -1,5 +1,5 @@
 -- ╔════════════════════════════════════════════════════════════════════════════════╗
--- ║         PHANTOM HUB ENHANCED - v3.5                                          ║
+-- ║         PHANTOM HUB ENHANCED - v3.6                                          ║
 -- ║  ✅ Improved aimbot (smooth, wall-check, bone target, team filter, lock)      ║
 -- ║  ✅ Upgraded ESP (health/dist/lookline, survives death+rejoin)                ║
 -- ║  ✅ Teleport + Server Hop + Auto Rejoin (restored)                           ║
@@ -133,65 +133,98 @@ SM:Register("FlySpeed",
 SM:Load(); SM:StartAutoApply()
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  IMPROVED NOCLIP (MY DUAL-METHOD SYSTEM)
+-- ──  NOCLIP
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Every RenderStepped frame: set CanCollide=false on every BasePart that
+--  belongs to the local player's character, including accessories and tools.
+--  Running every frame means server scripts that re-enable collision are
+--  overridden as fast as possible (next rendered frame).
+--  CollisionGroups are used as a second layer where supported.
 -- ════════════════════════════════════════════════════════════════════════════════
 local _noclipEnabled = false
-local _noclipConn, _noclipPartConn, _noclipCharConn = nil, nil, nil
-local _noclipGroup = "PhantomNoclip"
-local _noclipGroupReady = false
+local _noclipConn    = nil
+local _noclipCharConn= nil
+local _noclipGroup   = "PhantomNoclip"
+local _noclipReady   = false
 
+-- Try to set up a collision group that doesn't collide with anything.
+-- This is belt-and-suspenders alongside CanCollide=false.
 pcall(function()
     pcall(function() PhysicsService:RegisterCollisionGroup(_noclipGroup) end)
-    PhysicsService:CollisionGroupSetCollidable(_noclipGroup, "Default", false)
-    PhysicsService:CollisionGroupSetCollidable(_noclipGroup, _noclipGroup, false)
-    _noclipGroupReady = true
+    PhysicsService:CollisionGroupSetCollidable(_noclipGroup, "Default",       false)
+    PhysicsService:CollisionGroupSetCollidable(_noclipGroup, _noclipGroup,    false)
+    _noclipReady = true
 end)
 
-local function _ncPart(part, on)
-    part.CanCollide = not on
-    if _noclipGroupReady then pcall(function() part.CollisionGroup = on and _noclipGroup or "Default" end) end
+-- Apply or remove noclip on a single part
+local function _ncApply(part, on)
+    pcall(function()
+        part.CanCollide = not on
+        if _noclipReady then
+            part.CollisionGroup = on and _noclipGroup or "Default"
+        end
+    end)
 end
 
-local function _ncChar(char, on)
-    if not char then return end
+-- Collect every BasePart owned by the local player right now.
+-- Covers: character tree, accessories (may be in workspace), equipped tools.
+local function _ncGetAllParts()
+    local parts = {}
+    local char  = getChar()
+    if not char then return parts end
+
+    -- Character and everything in it (accessories, tools equipped, etc.)
     for _, d in ipairs(char:GetDescendants()) do
-        if d:IsA("BasePart") then _ncPart(d, on) end
+        if d:IsA("BasePart") then table.insert(parts, d) end
     end
+    if char:IsA("BasePart") then table.insert(parts, char) end
+
+    -- Accessories the game may have re-parented to workspace
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("BasePart") then
+            local ok, owner = pcall(function()
+                return game:GetService("Players"):GetPlayerFromCharacter(d.Parent)
+                    or game:GetService("Players"):GetPlayerFromCharacter(d.Parent and d.Parent.Parent)
+            end)
+            if ok and owner == LocalPlayer then
+                table.insert(parts, d)
+            end
+        end
+    end
+    return parts
 end
 
 local function _enableNoclip()
     _noclipEnabled = true
-    local char = getChar()
-    if char then _ncChar(char, true) end
-    
+
+    -- Immediate pass
+    for _, p in ipairs(_ncGetAllParts()) do _ncApply(p, true) end
+
+    -- Every RenderStepped: re-enforce so server re-enables are overridden
     if _noclipConn then _noclipConn:Disconnect() end
     _noclipConn = RunService.RenderStepped:Connect(function()
         if not _noclipEnabled then return end
-        local c = getChar()
-        if not c then return end
-        for _, d in ipairs(c:GetDescendants()) do
-            if d:IsA("BasePart") and d.CanCollide then d.CanCollide = false end
+        local char = getChar()
+        if not char then return end
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") and (d.CanCollide or (d.CollisionGroup ~= _noclipGroup and _noclipReady)) then
+                _ncApply(d, true)
+            end
         end
     end)
-    
-    if char then
-        if _noclipPartConn then _noclipPartConn:Disconnect() end
-        _noclipPartConn = char.DescendantAdded:Connect(function(d)
-            if d:IsA("BasePart") and _noclipEnabled then
-                task.defer(function() pcall(function() _ncPart(d, true) end) end)
-            end
-        end)
-    end
-    
+
+    -- Re-apply on respawn
     if _noclipCharConn then _noclipCharConn:Disconnect() end
     _noclipCharConn = LocalPlayer.CharacterAdded:Connect(function(newChar)
-        task.wait(0.3)
+        task.wait(0.1)  -- let character load
         if not _noclipEnabled then return end
-        _ncChar(newChar, true)
-        if _noclipPartConn then _noclipPartConn:Disconnect() end
-        _noclipPartConn = newChar.DescendantAdded:Connect(function(d)
+        for _, d in ipairs(newChar:GetDescendants()) do
+            if d:IsA("BasePart") then _ncApply(d, true) end
+        end
+        -- Also catch parts added after the initial load (accessories streaming in)
+        newChar.DescendantAdded:Connect(function(d)
             if d:IsA("BasePart") and _noclipEnabled then
-                task.defer(function() pcall(function() _ncPart(d, true) end) end)
+                task.defer(function() _ncApply(d, true) end)
             end
         end)
     end)
@@ -199,10 +232,15 @@ end
 
 local function _disableNoclip()
     _noclipEnabled = false
-    if _noclipConn then _noclipConn:Disconnect(); _noclipConn = nil end
-    if _noclipPartConn then _noclipPartConn:Disconnect(); _noclipPartConn = nil end
+    if _noclipConn     then _noclipConn:Disconnect();     _noclipConn     = nil end
     if _noclipCharConn then _noclipCharConn:Disconnect(); _noclipCharConn = nil end
-    _ncChar(getChar(), false)
+    -- Restore collision on all parts
+    local char = getChar()
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then _ncApply(d, false) end
+        end
+    end
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
@@ -223,26 +261,27 @@ local function stopWsEnforcer()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════════
--- ──  AIMBOT  (Heartbeat assist · bone targeting · wall check · sticky lock)
+-- ──  AIMBOT
 -- ─────────────────────────────────────────────────────────────────────────────
---  • Bone targeting  — Head / Neck / HRP (configurable)
---  • Wall check      — raycast; skip targets behind geometry
---  • Team filter     — never aims at teammates
---  • Smoothing       — Heartbeat lerp so mouse input is never blocked
---  • Target lock     — stays on acquired target until they die / hide behind wall
+--  Runs at RenderPriority.Camera+1 so it executes AFTER Roblox's own camera
+--  module applies your mouse delta.  This means both inputs layer correctly:
+--    frame N:  camera module sets cam.CFrame from mouse input
+--    frame N:  aimbot lerps cam.CFrame 12% toward target ON TOP of that
+--  Net result: mouse still fully controls aim direction; aimbot just gently
+--  pulls you toward the locked target.  Lower alpha = gentler assist.
 -- ════════════════════════════════════════════════════════════════════════════════
 local _abEnabled    = false
 local _abMode       = "Toggle"
 local _abKey        = Enum.KeyCode.RightAlt
 local _abKeyName    = "RightAlt"
 local _abFov        = 150
-local _abPrediction = 0.1768521
-local _abSmoothing  = 0.35    -- 0=instant snap  1=no movement (0.1–0.5 is best)
-local _abBone       = "Head"  -- "Head" | "Neck" | "HRP"
+local _abPrediction = 0.12    -- velocity lead multiplier (AssemblyLinearVelocity)
+local _abAlpha      = 0.12    -- lerp strength per frame at 60fps (0.05–0.25 feels natural)
+local _abBone       = "Head"
 local _abWallCheck  = true
 local _abTeamCheck  = true
 local _abConn       = nil
-local _abTarget     = nil     -- {part=BasePart, player=Player}  or  nil
+local _abTarget     = nil
 
 -- ── helpers ───────────────────────────────────────────────────────────────────
 local function _abGetBonePart(char)
@@ -343,7 +382,12 @@ local function _abGetPredicted(target)
     if not target or not target.part then return nil end
     local part = target.part
     if not part.Parent then return nil end
-    local vel  = pcall(function() return part.Velocity end) and part.Velocity or Vector3.new()
+    -- AssemblyLinearVelocity is the modern API; fall back to Velocity on older games
+    local ok, vel = pcall(function() return part.AssemblyLinearVelocity end)
+    if not ok or vel == nil then
+        ok, vel = pcall(function() return part.Velocity end)
+    end
+    if not ok or vel == nil then vel = Vector3.new() end
     return part.Position + vel * _abPrediction
 end
 
@@ -374,12 +418,12 @@ local function _runAimbot()
     local predicted = _abGetPredicted(_abTarget)
     if not predicted then _abTarget = nil; return end
 
-    -- ── normal aim: rotate camera toward target with smoothing ───────────────
-    local cam     = workspace.CurrentCamera
+    -- ── aim assist: lerp camera toward predicted target ──────────────────────
+    local cam      = workspace.CurrentCamera
     local targetCF = CFrame.new(cam.CFrame.Position, predicted)
-    -- Spherical lerp between current and target orientation
-    local alpha   = math.clamp(1 - _abSmoothing, 0.01, 1)
-    cam.CFrame    = cam.CFrame:Lerp(targetCF, alpha)
+    -- _abAlpha is the lerp weight per frame.  At Camera+1 priority this runs
+    -- after mouse input, so alpha=0.12 means "12% of remaining angle per frame".
+    cam.CFrame = cam.CFrame:Lerp(targetCF, _abAlpha)
 end
 
 -- ── FOV circle (Drawing API) ─────────────────────────────────────────────────
@@ -419,20 +463,20 @@ end
 _createFovCircle()  -- create on script load (Drawing is always available in exploits)
 
 -- ── Aimbot loop ─────────────────────────────────────────────────────────────
-local _abConn = nil   -- Heartbeat connection for aimbot assist loop
-local _fovConn = nil  -- separate RenderStepped for the FOV circle (visual only)
+local _ABOT_STEP   = "PhantomAimbot"   -- BindToRenderStep name
+local _fovConn     = nil
 
 local function _startAimbot()
-    -- FOV circle: update every render frame (pure visual, no cam manipulation)
+    -- FOV circle purely visual on RenderStepped
     if _fovConn then _fovConn:Disconnect() end
     _fovConn = RunService.RenderStepped:Connect(_updateFovCircle)
 
-    -- Aimbot assist: runs on Heartbeat so it DOES NOT override mouse input.
-    -- Roblox's camera module processes mouse on RenderStepped AFTER Heartbeat,
-    -- which means: aimbot nudges camera → mouse adds its delta on top.
-    -- Net result: you can move freely, aimbot just pulls you toward target.
-    if _abConn then _abConn:Disconnect() end
-    _abConn = RunService.Heartbeat:Connect(function()
+    -- Aimbot runs AFTER the camera module (Camera+1) so:
+    --   1. Camera module applies your mouse delta to cam.CFrame
+    --   2. Aimbot lerps cam.CFrame toward target on top of that result
+    -- Mouse input is never discarded; aimbot just adds a gentle pull.
+    pcall(function() RunService:UnbindFromRenderStep(_ABOT_STEP) end)
+    RunService:BindToRenderStep(_ABOT_STEP, Enum.RenderPriority.Camera.Value + 1, function()
         if not _abEnabled then _abTarget = nil; return end
         if _abMode == "Hold" and not UIS:IsKeyDown(_abKey) then
             _abTarget = nil; return
@@ -444,7 +488,7 @@ end
 
 local function _stopAimbot()
     _abEnabled = false
-    if _abConn  then _abConn:Disconnect();  _abConn  = nil end
+    pcall(function() RunService:UnbindFromRenderStep(_ABOT_STEP) end)
     if _fovConn then _fovConn:Disconnect(); _fovConn = nil end
     _abTarget = nil
     _destroyFovCircle()
@@ -1065,13 +1109,13 @@ UniCombat:NewSlider({
     end
 })
 UniCombat:NewSlider({
-    Title = "Smoothing (0=snap 100=slow)",
-    Min = 0, Max = 90, Default = 35,
-    Callback = function(v) _abSmoothing = v / 100 end
+    Title = "Aim Strength % (5=gentle 25=strong)",
+    Min = 1, Max = 40, Default = 12,
+    Callback = function(v) _abAlpha = v / 100 end
 })
 UniCombat:NewSlider({
-    Title = "Prediction (x0.01)",
-    Min = 0, Max = 100, Default = 18,
+    Title = "Prediction (velocity lead)",
+    Min = 0, Max = 50, Default = 12,
     Callback = function(v) _abPrediction = v / 100 end
 })
 UniCombat:NewToggle({
@@ -1592,12 +1636,12 @@ _G.PhantomHub = {
 
 -- ── Startup Notification ──────────────────────────────────────
 Hub:Notify({
-    Title = "Phantom v3.5",
-    Message = "J=menu  |  Del=PANIC  |  Aimbot: smooth assist, target lock, FOV circle, autoexec",
+    Title = "Phantom v3.6",
+    Message = "J=menu  |  Del=PANIC  |  v3.6: aimbot fixed (Camera+1), noclip improved",
     Duration = 6,
 })
 
-print("[Phantom] v3.5 loaded!")
+print("[Phantom] v3.6 loaded!")
 print("[Phantom] ✅ Best Aimbot (Dex5 + Dex6)")
 print("[Phantom] ✅ Your ESP")
 print("[Phantom] ✅ Teleport/Server Hop/Auto Rejoin")
