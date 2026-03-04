@@ -1,0 +1,8 @@
+# Local data files (don't commit to GitHub)
+phantom_*.json
+*.json
+phantom_logs/
+
+# Editor files
+.DS_Store
+*.swp
